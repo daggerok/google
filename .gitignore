@@ -35,3 +35,6 @@ dist
 
 .idea/
 .DS_Store
+
+# local files with all needed configuation (simplify developer exp.)
+google.json

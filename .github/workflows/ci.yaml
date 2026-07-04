@@ -1,0 +1,44 @@
+name: CI
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Устанавливаем bun прямо здесь, это быстро и надежно
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      # Кеширование зависимостей bun
+      - uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('**/package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+      - run: bun install -E
+      - run: bun run build
+      - run: bun run build-github-pages
+  npm-check-updates:
+    environment:
+      name: ci
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('**/package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+      - run: bunx npm-check-updates -u
+      - run: bun install
+      - run: npm run build
+      - run: npm run clean
+      - run: npm run build-github-pages

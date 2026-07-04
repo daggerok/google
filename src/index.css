@@ -1,0 +1,137 @@
+/* index.css */
+/**
+ * ============================================================================
+ * AGENTIC AI ENFORCED SPECIFICATION & GUIDELINES (CRITICAL)
+ * ============================================================================
+ * 1. PERSIST ALL COMMENTS: Under no circumstances should ANY code comments,
+ * system design docs, or type descriptors be removed or truncated.
+ * 2. AGENT READ-WRITE RULE: If a future deployment or agent updates the code,
+ * this header section and related documentation blocks MUST be kept accurate,
+ * expanded, and dynamically synchronized with the feature upgrades.
+ * 3. SINGLE-FILE CONTINUITY: Keep the core architecture completely self-contained
+ * within this file to maximize maintainability for automated development pipelines.
+ * ============================================================================
+ *
+ * ============================================================================
+ * AGENTIC AI DOCUMENTATION & SYSTEM ARCHITECTURE
+ * ============================================================================
+ *
+ * PROJECT: Google Sheets Store — Global Styles
+ * ENVIRONMENT: TailwindCSS v4 (CSS-in-JS style configuration)
+ *
+ * MODULES & FEATURES:
+ * 1. [Tailwind Engine & Variants]
+ * - Imports the tailwind base engine.
+ * - `@variant dark`: Enforces strict scoped dark mode strategy `where(.dark, .dark *)`
+ *   to ensure CSS selector specificity overrides standard tailwind defaults.
+ * - Dark mode is toggled by adding/removing `.dark` class on <html> element.
+ *
+ * 2. [Animation System]
+ * - `@theme`: Defines the design tokens for animations.
+ * - `shake`: Feedback animation for invalid inputs or modal rejections.
+ * - `fade-in`: Entry transition for modal windows, settings panel, and popover elements.
+ * - `slide-down`: Smooth panel open animation for settings drawer.
+ * - `slide-up`: Smooth panel close animation for settings drawer (reverse of slide-down).
+ *
+ * 3. [Scrollbar Theming]
+ * - Shared themed scrollbars across all scrollable surfaces in the app.
+ * - Applies to two utility classes:
+ *     • `.table-container` → main data table scroll area
+ *     • `.themed-scroll`   → any other scrollable surface (e.g. tabs strip, settings panel)
+ * - Firefox: uses `scrollbar-width` and `scrollbar-color`.
+ * - WebKit (Chrome / Safari / Edge): styled via `::-webkit-scrollbar` pseudo-elements.
+ * - Colors are sourced from the Tailwind `slate` palette to stay consistent with
+ *   the application's neutral surface theme:
+ *     • Light theme thumb: slate-300 (#cbd5e1), hover slate-400 (#94a3b8)
+ *     • Dark theme thumb : slate-700 (#334155), hover slate-600 (#475569)
+ *
+ * DESIGN PATTERNS:
+ * - Utility-First: Avoid over-nesting CSS; use Tailwind classes where possible.
+ * - Theme Consistency: All colors must derive from the Tailwind theme or explicit CSS variables.
+ * ============================================================================
+ */
+
+@import "tailwindcss";
+
+@variant dark (&:where(.dark, .dark *));
+
+@theme {
+    --animate-shake: shake 0.4s ease-in-out;
+    --animate-fade-in: fadeIn 0.3s ease-out;
+    --animate-slide-down: slideDown 0.25s ease-out forwards;
+    --animate-slide-up: slideUp 0.2s ease-in forwards;
+
+    @keyframes shake {
+        0%, 100% { transform: translateX(0); }
+        20%, 60% { transform: translateX(-6px); }
+        40%, 80% { transform: translateX(6px); }
+    }
+
+    @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(4px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
+
+    @keyframes slideDown {
+        from { opacity: 0; transform: translateY(-8px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
+
+    @keyframes slideUp {
+        from { opacity: 1; transform: translateY(0); }
+        to { opacity: 0; transform: translateY(-8px); }
+    }
+}
+
+/* ============================================================================
+ * SCROLLBAR THEMING
+ * ----------------------------------------------------------------------------
+ * Shared between `.table-container` (main data table) and `.themed-scroll`
+ * (e.g. horizontal tabs strip, settings panel). Uses Firefox `scrollbar-color`
+ * and WebKit `::-webkit-scrollbar` pseudo-elements for full cross-browser parity.
+ * ============================================================================ */
+
+/* Firefox */
+.table-container,
+.themed-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: #cbd5e1 transparent; /* slate-300 thumb on transparent track */
+}
+.dark .table-container,
+.dark .themed-scroll {
+    scrollbar-color: #334155 transparent; /* slate-700 thumb in dark mode */
+}
+
+/* WebKit (Chrome, Safari, Edge) */
+.table-container::-webkit-scrollbar,
+.themed-scroll::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+.table-container::-webkit-scrollbar-track,
+.themed-scroll::-webkit-scrollbar-track {
+    background: transparent;
+}
+.table-container::-webkit-scrollbar-thumb,
+.themed-scroll::-webkit-scrollbar-thumb {
+    background-color: #cbd5e1; /* slate-300 */
+    border-radius: 8px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+}
+.table-container::-webkit-scrollbar-thumb:hover,
+.themed-scroll::-webkit-scrollbar-thumb:hover {
+    background-color: #94a3b8; /* slate-400 */
+}
+.dark .table-container::-webkit-scrollbar-thumb,
+.dark .themed-scroll::-webkit-scrollbar-thumb {
+    background-color: #334155; /* slate-700 */
+}
+.dark .table-container::-webkit-scrollbar-thumb:hover,
+.dark .themed-scroll::-webkit-scrollbar-thumb:hover {
+    background-color: #475569; /* slate-600 */
+}
+.table-container::-webkit-scrollbar-corner,
+.themed-scroll::-webkit-scrollbar-corner {
+    background: transparent;
+}

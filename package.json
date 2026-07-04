@@ -1,0 +1,58 @@
+{
+  "name": "google",
+  "version": "1.0.0",
+  "description": "Google Sheets Store",
+  "source": "src/index.html",
+  "scripts": {
+    "clean": "rimraf -rf dist",
+    "preserve": "npm run clean",
+    "prebuild": "npm run clean",
+    "build-github-pages": "npm run build -- --public-url=/google/",
+    "serve": "parcel --no-cache --no-source-maps",
+    "build": "parcel build --no-cache --no-source-maps",
+    "start": "pm2 start 'npm run serve' --name app",
+    "restart": "pm2 restart app",
+    "stop": "pm2 kill",
+    "logs": "pm2 logs",
+    "test": "jest src",
+    "dev": "npm run test -- --watchAll"
+  },
+  "keywords": [
+    "react",
+    "tailwind",
+    "postcss",
+    "parcel",
+    "rimraf",
+    "pm2"
+  ],
+  "author": "Maksim Kostromin / GitHub: daggerok",
+  "license": "MIT",
+  "dependencies": {
+    "clsx": "2.1.1",
+    "lucide-react": "1.23.0",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "recharts": "3.9.1",
+    "tailwind-merge": "3.6.0"
+  },
+  "devDependencies": {
+    "@parcel/transformer-sass": "2.16.4",
+    "@types/node": "26.1.0",
+    "jest": "30.4.2",
+    "parcel": "2.16.4",
+    "pm2": "7.0.3",
+    "rimraf": "6.1.3",
+    "sass": "1.101.0",
+    "@tailwindcss/postcss": "4.3.2",
+    "@types/papaparse": "5.5.2",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "papaparse": "5.5.4",
+    "tailwindcss": "4.3.2"
+  },
+  "postcss": {
+    "plugins": {
+      "@tailwindcss/postcss": {}
+    }
+  }
+}

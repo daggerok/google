@@ -144,7 +144,7 @@ type DataStore = {
 const DICTIONARIES: Record<Locale, Record<string, string>> = {
     en: {
         /* Header */
-        'header.title': 'Google Sheets Datastore',
+        'header.title': 'Google Sheets Store',
         'header.settings': 'Settings',
         'header.theme': 'Theme',
 
@@ -233,7 +233,7 @@ const DICTIONARIES: Record<Locale, Record<string, string>> = {
     },
     ru: {
         /* Header */
-        'header.title': 'Google Sheets Datastore',
+        'header.title': 'Google Sheets Store',
         'header.settings': 'Настройки',
         'header.theme': 'Тема',
 
@@ -849,7 +849,7 @@ const SettingsPanel: React.FC<{
                 </button>
             </div>
 
-            {/* General section: theme, language, backend */}
+            {/* General section */}
             <div className="border-b border-slate-200 dark:border-slate-700 px-5 py-4 space-y-4">
                 <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-300">{t('settings.general')}</h3>
 
@@ -1003,7 +1003,17 @@ const App: React.FC = () => {
     const t = useT(config.locale);
     const resolvedTheme = useMemo(() => resolveTheme(config.theme), [config.theme]);
 
-    const activeBackend: BackendMode = useMemo(() => 'local', []);
+    /**
+     * Active backend mode.
+     * Typed explicitly as BackendMode so TypeScript does not narrow
+     * the literal to just 'local', which would make comparisons with
+     * 'google' a TS2367 error. When Google auth is wired, the memo
+     * body will evaluate config.preferredBackend + auth state.
+     */
+    const activeBackend = useMemo<BackendMode>(() => {
+        // TODO: return 'google' when Google auth is connected and config.preferredBackend === 'google'
+        return config.preferredBackend === 'google' ? 'local' : 'local';
+    }, [config.preferredBackend]);
 
     const dataStore: DataStore = useMemo(
         () => createLocalDataStore(config.localStorageKey),
@@ -1039,11 +1049,9 @@ const App: React.FC = () => {
 
     useEffect(() => {
         if (config.settingsOpen) {
-            /* Opening: show the DOM node immediately */
             setSettingsClosing(false);
             setSettingsVisible(true);
         } else if (settingsVisible) {
-            /* Closing: start close animation; unmount happens in onAnimationEnd */
             setSettingsClosing(true);
         }
     }, [config.settingsOpen, settingsVisible]);

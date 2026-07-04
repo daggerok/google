@@ -21,35 +21,16 @@
  *
  * MODULES & FEATURES:
  * 1. [Tailwind Engine & Variants]
- * - Imports the tailwind base engine.
- * - `@variant dark`: Enforces strict scoped dark mode strategy `where(.dark, .dark *)`
- *   to ensure CSS selector specificity overrides standard tailwind defaults.
- * - Dark mode is toggled by adding/removing `.dark` class on <html> element.
+ * - `@variant dark`: scoped dark mode via `.dark` class on <html>.
  *
  * 2. [Animation System]
- * - `@theme`: Defines the design tokens for animations.
- * - `shake`: Feedback animation for invalid inputs or modal rejections.
- * - `fade-in`: Entry transition for modal windows, settings panel, and popover elements.
- * - `slide-down`: Smooth panel open animation for settings drawer.
- * - `slide-up`: Smooth panel close animation for settings drawer (reverse of slide-down).
- * - `toast-in`: Toast notification slide-in from top-right.
- * - `toast-out`: Toast notification fade-out before auto-dismiss.
+ * - shake, fadeIn, slideDown, slideUp: settings panel & feedback
+ * - toastIn, toastOut: toast notifications
+ * - progressBar: indeterminate loading bar animation
+ * - spin: spinner rotation
  *
  * 3. [Scrollbar Theming]
- * - Shared themed scrollbars across all scrollable surfaces in the app.
- * - Applies to two utility classes:
- *     • `.table-container` → main data table scroll area
- *     • `.themed-scroll`   → any other scrollable surface (e.g. tabs strip, settings panel)
- * - Firefox: uses `scrollbar-width` and `scrollbar-color`.
- * - WebKit (Chrome / Safari / Edge): styled via `::-webkit-scrollbar` pseudo-elements.
- * - Colors are sourced from the Tailwind `slate` palette to stay consistent with
- *   the application's neutral surface theme:
- *     • Light theme thumb: slate-300 (#cbd5e1), hover slate-400 (#94a3b8)
- *     • Dark theme thumb : slate-700 (#334155), hover slate-600 (#475569)
- *
- * DESIGN PATTERNS:
- * - Utility-First: Avoid over-nesting CSS; use Tailwind classes where possible.
- * - Theme Consistency: All colors must derive from the Tailwind theme or explicit CSS variables.
+ * - `.table-container` and `.themed-scroll` classes
  * ============================================================================
  */
 
@@ -64,6 +45,8 @@
     --animate-slide-up: slideUp 0.2s ease-in forwards;
     --animate-toast-in: toastIn 0.3s ease-out forwards;
     --animate-toast-out: toastOut 0.3s ease-in forwards;
+    --animate-progress: progressBar 1.5s ease-in-out infinite;
+    --animate-spin: spin 0.8s linear infinite;
 
     @keyframes shake {
         0%, 100% { transform: translateX(0); }
@@ -94,6 +77,17 @@
     @keyframes toastOut {
         from { opacity: 1; transform: translateX(0); }
         to { opacity: 0; transform: translateX(100%); }
+    }
+
+    @keyframes progressBar {
+        0% { transform: translateX(-100%); }
+        50% { transform: translateX(0%); }
+        100% { transform: translateX(100%); }
+    }
+
+    @keyframes spin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
     }
 }
 

@@ -44,12 +44,15 @@
  *
  * 6. [Header Backend Toggle]
  * - Visible when config has both clientId AND spreadsheetId.
- * - 💾 = currently using localStorage → click to connect Google & switch.
+ * - 💾 = currently using localStorage → click to connect Google & auto-load data.
  * - ☁️ = currently using Google Sheets → click to switch back to localStorage.
- * - 🔄 Reload button next to it reloads data from current active backend.
+ * - When Google is active, a 🔌 disconnect button appears before the ☁️ icon.
+ * - No separate refresh button — data loads automatically on backend switch.
  *
  * 7. [Toast Notification System]
- * - Non-blocking floating toasts with auto-dismiss.
+ * - ALL status/error messages shown as non-blocking floating toasts.
+ * - No persistent status bar or message area.
+ * - Auto-dismiss after configurable timeout (default 8s).
  *
  * 8. [Debug Mode]
  * - `?debug=true` URL parameter.
@@ -67,63 +70,16 @@ import { createRoot } from 'react-dom/client';
 type Locale = 'en' | 'ru';
 type ThemePreference = 'light' | 'dark' | 'system';
 type BackendMode = 'local' | 'google';
-
-type AppRecord = {
-    id: string;
-    text: string;
-    createdAt: string;
-    updatedAt: string;
-};
-
-type GoogleConfig = {
-    clientId: string;
-    spreadsheetId: string;
-    spreadsheetUrl: string;
-    sheetName: string;
-    lastAccountEmail: string;
-};
-
-type AppConfig = {
-    locale: Locale;
-    theme: ThemePreference;
-    preferredBackend: BackendMode;
-    localStorageKey: string;
-    settingsOpen: boolean;
-    settingsTab: 'local' | 'google';
-    google: GoogleConfig;
-};
-
-type DataStore = {
-    list: () => Promise<AppRecord[]>;
-    add: (text: string) => Promise<AppRecord>;
-    remove: (id: string) => Promise<void>;
-    clear: () => Promise<void>;
-};
-
-type Toast = {
-    id: string;
-    message: string;
-    detail?: string;
-    level: 'error' | 'info' | 'warn';
-    expanded?: boolean;
-    dismissing?: boolean;
-};
-
+type AppRecord = { id: string; text: string; createdAt: string; updatedAt: string };
+type GoogleConfig = { clientId: string; spreadsheetId: string; spreadsheetUrl: string; sheetName: string; lastAccountEmail: string };
+type AppConfig = { locale: Locale; theme: ThemePreference; preferredBackend: BackendMode; localStorageKey: string; settingsOpen: boolean; settingsTab: 'local' | 'google'; google: GoogleConfig };
+type DataStore = { list: () => Promise<AppRecord[]>; add: (text: string) => Promise<AppRecord>; remove: (id: string) => Promise<void>; clear: () => Promise<void> };
+type Toast = { id: string; message: string; detail?: string; level: 'error' | 'info' | 'warn'; expanded?: boolean; dismissing?: boolean };
 type GisTokenResponse = { access_token?: string; error?: string; expires_in?: number };
 type GisErrorResponse = { type?: string; message?: string };
 type GisTokenClient = { requestAccessToken: (opts?: { prompt?: string }) => void };
-type GisNamespace = {
-    accounts: {
-        oauth2: {
-            initTokenClient: (cfg: { client_id: string; scope: string; callback: (r: GisTokenResponse) => void; error_callback?: (e: GisErrorResponse) => void }) => GisTokenClient;
-            revoke: (token: string, cb?: () => void) => void;
-        };
-    };
-};
-
-declare global {
-    interface Window { google?: GisNamespace; }
-}
+type GisNamespace = { accounts: { oauth2: { initTokenClient: (cfg: { client_id: string; scope: string; callback: (r: GisTokenResponse) => void; error_callback?: (e: GisErrorResponse) => void }) => GisTokenClient; revoke: (token: string, cb?: () => void) => void } } };
+declare global { interface Window { google?: GisNamespace } }
 
 // ============================================================================
 // i18n DICTIONARY
@@ -136,7 +92,7 @@ const DICTIONARIES: Record<Locale, Record<string, string>> = {
         'header.theme': 'Theme',
         'header.backendToggle.toGoogle': 'Switch to Google Sheets',
         'header.backendToggle.toLocal': 'Switch to localStorage',
-        'header.backendToggle.reload': 'Reload data',
+        'header.backendToggle.disconnect': 'Disconnect from Google',
 
         'settings.title': 'Settings',
         'settings.general': 'General',
@@ -213,13 +169,12 @@ const DICTIONARIES: Record<Locale, Record<string, string>> = {
         'google.newSheetTitle.placeholder': 'My Data Store',
         'google.error.noClientId': 'Enter Google OAuth Client ID first.',
         'google.error.noSpreadsheet': 'Enter Spreadsheet ID or URL, or create a new spreadsheet.',
-        'google.msg.connecting': 'Connecting to Google...',
         'google.msg.connected': 'Connected to Google.',
         'google.msg.disconnected': 'Disconnected from Google. Using localStorage.',
         'google.msg.sheetAttached': 'Spreadsheet attached and ready.',
         'google.msg.sheetCreated': 'New spreadsheet created and attached.',
-        'google.msg.switchedToGoogle': 'Switched to Google Sheets backend.',
-        'google.msg.switchedToLocal': 'Switched to localStorage backend.',
+        'google.msg.switchedToGoogle': 'Switched to Google Sheets.',
+        'google.msg.switchedToLocal': 'Switched to localStorage.',
 
         'toast.silentAuthFailed': 'Auto-login to Google failed. Using localStorage. Open Settings → Google Sheets to reconnect.',
         'toast.details': 'Details',
@@ -247,7 +202,7 @@ const DICTIONARIES: Record<Locale, Record<string, string>> = {
         'header.theme': 'Тема',
         'header.backendToggle.toGoogle': 'Переключить на Google Sheets',
         'header.backendToggle.toLocal': 'Переключить на localStorage',
-        'header.backendToggle.reload': 'Обновить данные',
+        'header.backendToggle.disconnect': 'Отключиться от Google',
 
         'settings.title': 'Настройки',
         'settings.general': 'Общие',
@@ -324,7 +279,6 @@ const DICTIONARIES: Record<Locale, Record<string, string>> = {
         'google.newSheetTitle.placeholder': 'Моё хранилище',
         'google.error.noClientId': 'Сначала введите Google OAuth Client ID.',
         'google.error.noSpreadsheet': 'Введите Spreadsheet ID / URL или создайте новый документ.',
-        'google.msg.connecting': 'Подключение к Google...',
         'google.msg.connected': 'Подключён к Google.',
         'google.msg.disconnected': 'Отключён от Google. Используется localStorage.',
         'google.msg.sheetAttached': 'Документ подключён и готов к использованию.',
@@ -370,24 +324,10 @@ const SHEETS_API = 'https://sheets.googleapis.com/v4';
 const USERINFO_URL = 'https://www.googleapis.com/oauth2/v3/userinfo';
 const DEBUG = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('debug') === 'true';
 
-// ============================================================================
-// DEBUG / i18n / HELPERS
-// ============================================================================
-
 const dbg = (...args: unknown[]) => { if (DEBUG) console.log('[DBG]', ...args); };
 
-const useT = (locale: Locale) => useMemo(() => {
-    const dict = DICTIONARIES[locale] ?? DICTIONARIES.en;
-    return (key: string): string => dict[key] ?? DICTIONARIES.en[key] ?? key;
-}, [locale]);
-
-const pluralizeRecords = (count: number, t: (k: string) => string): string => {
-    const a = Math.abs(count);
-    if (a === 0) return `${count} ${t('data.records.0')}`;
-    if (a % 10 === 1 && a % 100 !== 11) return `${count} ${t('data.records.1')}`;
-    if (a % 10 >= 2 && a % 10 <= 4 && (a % 100 < 10 || a % 100 >= 20)) return `${count} ${t('data.records.few')}`;
-    return `${count} ${t('data.records.many')}`;
-};
+const useT = (locale: Locale) => useMemo(() => { const dict = DICTIONARIES[locale] ?? DICTIONARIES.en; return (key: string): string => dict[key] ?? DICTIONARIES.en[key] ?? key; }, [locale]);
+const pluralizeRecords = (count: number, t: (k: string) => string): string => { const a = Math.abs(count); if (a === 0) return `${count} ${t('data.records.0')}`; if (a % 10 === 1 && a % 100 !== 11) return `${count} ${t('data.records.1')}`; if (a % 10 >= 2 && a % 10 <= 4 && (a % 100 < 10 || a % 100 >= 20)) return `${count} ${t('data.records.few')}`; return `${count} ${t('data.records.many')}`; };
 
 const createId = (): string => typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const nowISO = (): string => new Date().toISOString();
@@ -399,56 +339,27 @@ const quoteTab = (name: string): string => { const n = name.trim() || DEFAULT_GO
 const sheetRange = (tab: string, cells: string) => `${quoteTab(tab)}!${cells}`;
 const errMsg = (e: unknown): string => { if (e instanceof Error) return e.message; if (typeof e === 'string') return e; try { return JSON.stringify(e); } catch { return 'Unknown error'; } };
 
-// ============================================================================
-// THEME
-// ============================================================================
-
 const resolveTheme = (p: ThemePreference): 'light' | 'dark' => { if (p === 'light' || p === 'dark') return p; return typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; };
 const applyTheme = (r: 'light' | 'dark') => { if (r === 'dark') document.documentElement.classList.add('dark'); else document.documentElement.classList.remove('dark'); };
-
-// ============================================================================
-// APP CONFIG
-// ============================================================================
 
 const DEFAULT_CONFIG: AppConfig = { locale: 'en', theme: 'system', preferredBackend: 'local', localStorageKey: DEFAULT_LOCAL_STORAGE_DB_KEY, settingsOpen: false, settingsTab: 'local', google: { clientId: DEFAULT_GOOGLE_OAUTH_CLIENT_ID, spreadsheetId: '', spreadsheetUrl: '', sheetName: DEFAULT_GOOGLE_SHEET_NAME, lastAccountEmail: '' } };
 const readConfig = (): AppConfig => { try { const raw = localStorage.getItem(APP_CONFIG_KEY); if (!raw) return { ...DEFAULT_CONFIG }; const p = tryJson<Partial<AppConfig>>(raw, {}); return { ...DEFAULT_CONFIG, ...p, google: { ...DEFAULT_CONFIG.google, ...(p.google ?? {}) } }; } catch { return { ...DEFAULT_CONFIG }; } };
 const writeConfig = (c: AppConfig) => { try { localStorage.setItem(APP_CONFIG_KEY, JSON.stringify(c)); } catch {} };
 
-// ============================================================================
-// LOCAL DATA STORE
-// ============================================================================
-
 const createLocalDataStore = (key: string): DataStore => {
     const readAll = (): AppRecord[] => { try { const raw = localStorage.getItem(key); if (!raw) return []; const arr = tryJson<unknown[]>(raw, []); if (!Array.isArray(arr)) return []; return arr.filter((x): x is AppRecord => !!x && typeof x === 'object' && typeof (x as AppRecord).id === 'string' && typeof (x as AppRecord).text === 'string'); } catch { return []; } };
     const writeAll = (recs: AppRecord[]) => { try { localStorage.setItem(key, JSON.stringify(recs)); } catch {} };
-    return {
-        list: async () => readAll(),
-        add: async (text) => { const r: AppRecord = { id: createId(), text, createdAt: nowISO(), updatedAt: nowISO() }; const all = readAll(); all.push(r); writeAll(all); return r; },
-        remove: async (id) => writeAll(readAll().filter(r => r.id !== id)),
-        clear: async () => writeAll([]),
-    };
+    return { list: async () => readAll(), add: async (text) => { const r: AppRecord = { id: createId(), text, createdAt: nowISO(), updatedAt: nowISO() }; const all = readAll(); all.push(r); writeAll(all); return r; }, remove: async (id) => writeAll(readAll().filter(r => r.id !== id)), clear: async () => writeAll([]) };
 };
-
-// ============================================================================
-// GIS
-// ============================================================================
 
 let gisLoadPromise: Promise<void> | null = null;
 const waitForGis = (timeout = 10000): Promise<void> => new Promise((ok, fail) => { const t0 = Date.now(); const tick = () => { if (window.google?.accounts?.oauth2) return ok(); if (Date.now() - t0 > timeout) return fail(new Error('GIS load timeout')); setTimeout(tick, 50); }; tick(); });
 const loadGis = async (): Promise<void> => { if (window.google?.accounts?.oauth2) return; if (!gisLoadPromise) { gisLoadPromise = new Promise((ok, fail) => { if (document.querySelector('script[data-gis]')) { waitForGis().then(ok).catch(e => { gisLoadPromise = null; fail(e); }); return; } const s = document.createElement('script'); s.src = GIS_SCRIPT_SRC; s.async = true; s.defer = true; s.dataset.gis = '1'; s.onload = () => waitForGis().then(ok).catch(e => { gisLoadPromise = null; fail(e); }); s.onerror = () => { gisLoadPromise = null; fail(new Error('Failed to load GIS')); }; document.head.appendChild(s); }); } await gisLoadPromise; };
 const requestToken = async (clientId: string, interactive: boolean): Promise<string> => { await loadGis(); if (!window.google?.accounts?.oauth2) throw new Error('GIS not available'); return new Promise<string>((ok, fail) => { const tc = window.google!.accounts.oauth2.initTokenClient({ client_id: clientId, scope: GOOGLE_SCOPES, callback: (r) => { if (r.error) return fail(new Error(r.error)); if (!r.access_token) return fail(new Error('No access token')); ok(r.access_token); }, error_callback: (e) => fail(new Error(e?.type || e?.message || 'GIS error')) }); tc.requestAccessToken({ prompt: interactive ? 'consent' : '' }); }); };
 
-// ============================================================================
-// GOOGLE API
-// ============================================================================
-
 const gFetch = async <T,>(url: string, token: string, init: RequestInit = {}): Promise<T> => { dbg('gFetch', init.method ?? 'GET', url); const h = new Headers(init.headers); h.set('Authorization', `Bearer ${token}`); if (init.body && !h.has('Content-Type')) h.set('Content-Type', 'application/json'); const res = await fetch(url, { ...init, headers: h }); const txt = await res.text(); const json = txt ? tryJson<unknown>(txt, null) : null; if (!res.ok) { let msg = txt || res.statusText || `HTTP ${res.status}`; if (json && typeof json === 'object' && 'error' in json) { const e = (json as { error?: { message?: string } }).error; if (e?.message) msg = e.message; } throw new Error(`Google API ${res.status}: ${msg}`); } return json as T; };
 const sheetsApi = <T,>(path: string, token: string, init?: RequestInit) => gFetch<T>(`${SHEETS_API}${path}`, token, init);
 const fetchProfile = async (token: string) => gFetch<{ email?: string; name?: string; picture?: string }>(USERINFO_URL, token);
-
-// ============================================================================
-// SHEETS OPERATIONS
-// ============================================================================
 
 const ensureSheet = async (token: string, sid: string, tabName: string) => { const id = normSheetId(sid); const tab = tabName.trim() || DEFAULT_GOOGLE_SHEET_NAME; if (!id) throw new Error('Missing spreadsheet ID'); const meta = await sheetsApi<{ sheets?: { properties?: { title?: string } }[] }>(`/spreadsheets/${id}`, token); if (!(meta.sheets ?? []).some(s => s.properties?.title === tab)) { await sheetsApi(`/spreadsheets/${id}:batchUpdate`, token, { method: 'POST', body: JSON.stringify({ requests: [{ addSheet: { properties: { title: tab } } }] }) }); } const hRange = sheetRange(tab, 'A1:D1'); await sheetsApi(`/spreadsheets/${id}/values/${encodeURIComponent(hRange)}?valueInputOption=RAW`, token, { method: 'PUT', body: JSON.stringify({ range: hRange, majorDimension: 'ROWS', values: [Array.from(SHEET_HEADERS)] }) }); };
 const createSpreadsheet = async (token: string, title: string, tabName: string) => { const tab = tabName.trim() || DEFAULT_GOOGLE_SHEET_NAME; const res = await sheetsApi<{ spreadsheetId?: string; spreadsheetUrl?: string }>('/spreadsheets', token, { method: 'POST', body: JSON.stringify({ properties: { title: title.trim() || 'Google Sheets Store' }, sheets: [{ properties: { title: tab } }] }) }); const id = res.spreadsheetId?.trim(); if (!id) throw new Error('API did not return spreadsheetId'); await ensureSheet(token, id, tab); return { spreadsheetId: id, spreadsheetUrl: res.spreadsheetUrl?.trim() || sheetUrl(id) }; };
@@ -456,19 +367,10 @@ const readSheetRecords = async (token: string, sid: string, tabName: string): Pr
 const appendSheetRecord = async (token: string, sid: string, tabName: string, rec: AppRecord) => { const id = normSheetId(sid); const tab = tabName.trim() || DEFAULT_GOOGLE_SHEET_NAME; await sheetsApi(`/spreadsheets/${id}/values/${encodeURIComponent(sheetRange(tab, 'A:D'))}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`, token, { method: 'POST', body: JSON.stringify({ values: [[rec.id, rec.text, rec.createdAt, rec.updatedAt]] }) }); };
 const rewriteSheetRecords = async (token: string, sid: string, tabName: string, recs: AppRecord[]) => { const id = normSheetId(sid); const tab = tabName.trim() || DEFAULT_GOOGLE_SHEET_NAME; await sheetsApi(`/spreadsheets/${id}/values/${encodeURIComponent(sheetRange(tab, 'A2:D'))}:clear`, token, { method: 'POST', body: '{}' }); if (recs.length === 0) return; const putRange = sheetRange(tab, 'A2:D'); await sheetsApi(`/spreadsheets/${id}/values/${encodeURIComponent(putRange)}?valueInputOption=RAW`, token, { method: 'PUT', body: JSON.stringify({ range: putRange, majorDimension: 'ROWS', values: recs.map(r => [r.id, r.text, r.createdAt, r.updatedAt]) }) }); };
 
-// ============================================================================
-// GOOGLE SHEETS DATA STORE
-// ============================================================================
-
 const createGoogleSheetsDataStore = (tokenRef: React.MutableRefObject<string | null>, sid: string, tabName: string): DataStore => {
     const gt = () => { const t = tokenRef.current; if (!t) throw new Error('Google session expired. Please reconnect.'); return t; };
     const id = normSheetId(sid); const tab = tabName.trim() || DEFAULT_GOOGLE_SHEET_NAME;
-    return {
-        list: async () => readSheetRecords(gt(), id, tab),
-        add: async (text) => { const rec: AppRecord = { id: createId(), text, createdAt: nowISO(), updatedAt: nowISO() }; await appendSheetRecord(gt(), id, tab, rec); return rec; },
-        remove: async (rid) => { const all = await readSheetRecords(gt(), id, tab); await rewriteSheetRecords(gt(), id, tab, all.filter(r => r.id !== rid)); },
-        clear: async () => { await rewriteSheetRecords(gt(), id, tab, []); },
-    };
+    return { list: async () => readSheetRecords(gt(), id, tab), add: async (text) => { const rec: AppRecord = { id: createId(), text, createdAt: nowISO(), updatedAt: nowISO() }; await appendSheetRecord(gt(), id, tab, rec); return rec; }, remove: async (rid) => { const all = await readSheetRecords(gt(), id, tab); await rewriteSheetRecords(gt(), id, tab, all.filter(r => r.id !== rid)); }, clear: async () => { await rewriteSheetRecords(gt(), id, tab, []); } };
 };
 
 // ============================================================================
@@ -497,7 +399,7 @@ const ToastContainer: React.FC<{ toasts: Toast[]; onDismiss: (id: string) => voi
 };
 
 // ============================================================================
-// SETTINGS TABS
+// SETTINGS TABS & PANEL (unchanged from previous version)
 // ============================================================================
 
 const SettingsLocalTab: React.FC<{ config: AppConfig; recordCount: number; onClearData: () => void; isBusy: boolean; t: (k: string) => string }> = ({ config, recordCount, onClearData, isBusy, t }) => (
@@ -541,10 +443,6 @@ const SettingsGoogleTab: React.FC<{ config: AppConfig; isGoogleAuthed: boolean; 
     );
 };
 
-// ============================================================================
-// SETTINGS PANEL
-// ============================================================================
-
 const SettingsPanel: React.FC<{ config: AppConfig; setConfig: React.Dispatch<React.SetStateAction<AppConfig>>; recordCount: number; onClearData: () => void; isBusy: boolean; isClosing: boolean; onCloseAnimEnd: () => void; isGoogleAuthed: boolean; googleEmail: string; onGoogleConnect: () => void; onGoogleDisconnect: () => void; onGoogleAttach: () => void; onGoogleCreate: () => void; onSwitchToGoogle: () => void; onSwitchToLocal: () => void; t: (k: string) => string }> = (props) => {
     const { config, setConfig, recordCount, onClearData, isBusy, isClosing, onCloseAnimEnd, isGoogleAuthed, googleEmail, onGoogleConnect, onGoogleDisconnect, onGoogleAttach, onGoogleCreate, onSwitchToGoogle, onSwitchToLocal, t } = props;
     const handleGoogleConfigChange = useCallback((p: Partial<GoogleConfig>) => setConfig(prev => ({ ...prev, google: { ...prev.google, ...p } })), [setConfig]);
@@ -566,10 +464,6 @@ const SettingsPanel: React.FC<{ config: AppConfig; setConfig: React.Dispatch<Rea
     );
 };
 
-// ============================================================================
-// THEME TOGGLE
-// ============================================================================
-
 const ThemeToggle: React.FC<{ theme: ThemePreference; onCycle: () => void; t: (k: string) => string }> = ({ theme, onCycle, t }) => {
     const resolved = resolveTheme(theme); const titles: Record<ThemePreference, string> = { light: t('settings.theme.light'), dark: t('settings.theme.dark'), system: t('settings.theme.system') };
     return <button type="button" onClick={onCycle} className="rounded-lg p-2 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition" aria-label={`${t('header.theme')}: ${titles[theme]}`} title={`${t('header.theme')}: ${titles[theme]}`}>{theme === 'system' ? <IconMonitor/> : resolved === 'dark' ? <IconMoon/> : <IconSun/>}</button>;
@@ -585,7 +479,6 @@ const App: React.FC = () => {
     const [draftText, setDraftText] = useState('');
     const [isBusy, setIsBusy] = useState(false);
     const [toasts, setToasts] = useState<Toast[]>([]);
-    const [statusMsg, setStatusMsg] = useState('');
     const [settingsVisible, setSettingsVisible] = useState(config.settingsOpen);
     const [settingsClosing, setSettingsClosing] = useState(false);
     const [isGoogleAuthed, setIsGoogleAuthed] = useState(false);
@@ -596,8 +489,6 @@ const App: React.FC = () => {
     const resolvedTheme = useMemo(() => resolveTheme(config.theme), [config.theme]);
     const normalizedSheetId = useMemo(() => normSheetId(config.google.spreadsheetId), [config.google.spreadsheetId]);
     const effectiveTab = useMemo(() => config.google.sheetName.trim() || DEFAULT_GOOGLE_SHEET_NAME, [config.google.sheetName]);
-
-    /** Whether the header backend toggle button should be visible */
     const showBackendToggle = useMemo(() => Boolean(config.google.clientId.trim() && normalizedSheetId), [config.google.clientId, normalizedSheetId]);
 
     const activeBackend = useMemo<BackendMode>(() => {
@@ -612,23 +503,20 @@ const App: React.FC = () => {
 
     const sortedRecords = useMemo(() => [...records].sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || '')), [records]);
 
-    /* ── Toast ──────────────────────────────────────────────────────────── */
     const addToast = useCallback((message: string, level: Toast['level'] = 'error', detail?: string) => {
         const id = createId(); setToasts(prev => [...prev, { id, message, detail, level }]);
         setTimeout(() => { setToasts(prev => prev.map(t => t.id === id ? { ...t, dismissing: true } : t)); }, TOAST_AUTO_DISMISS_MS);
     }, []);
     const dismissToast = useCallback((id: string) => { setToasts(prev => { const toast = prev.find(t => t.id === id); if (toast?.dismissing) return prev.filter(t => t.id !== id); return prev.map(t => t.id === id ? { ...t, dismissing: true } : t); }); }, []);
     const toggleToastDetail = useCallback((id: string) => { setToasts(prev => prev.map(t => t.id === id ? { ...t, expanded: !t.expanded } : t)); }, []);
-    const showError = useCallback((e: unknown, fallbackMsg?: string) => { const msg = fallbackMsg || errMsg(e); addToast(msg, 'error', fallbackMsg ? errMsg(e) : undefined); }, [addToast]);
+    const showError = useCallback((e: unknown, fallbackMsg?: string) => { addToast(fallbackMsg || errMsg(e), 'error', fallbackMsg ? errMsg(e) : undefined); }, [addToast]);
 
-    /* ── Theme ──────────────────────────────────────────────────────────── */
     useEffect(() => { applyTheme(resolvedTheme); }, [resolvedTheme]);
     useEffect(() => { if (config.theme !== 'system') return; const mq = window.matchMedia('(prefers-color-scheme: dark)'); const h = () => applyTheme(resolveTheme('system')); mq.addEventListener('change', h); return () => mq.removeEventListener('change', h); }, [config.theme]);
     useEffect(() => { writeConfig(config); }, [config]);
     useEffect(() => { if (config.settingsOpen) { setSettingsClosing(false); setSettingsVisible(true); } else if (settingsVisible) setSettingsClosing(true); }, [config.settingsOpen, settingsVisible]);
     const handleSettingsCloseAnimEnd = useCallback(() => { setSettingsVisible(false); setSettingsClosing(false); }, []);
 
-    /* ── Google auth ────────────────────────────────────────────────────── */
     const doGoogleAuth = useCallback(async (interactive: boolean): Promise<string> => {
         const clientId = config.google.clientId.trim(); if (!clientId) throw new Error(t('google.error.noClientId'));
         const token = await requestToken(clientId, interactive); tokenRef.current = token; setIsGoogleAuthed(true);
@@ -641,7 +529,6 @@ const App: React.FC = () => {
         tokenRef.current = null; setIsGoogleAuthed(false); setGoogleEmail('');
     }, []);
 
-    /* ── Boot ───────────────────────────────────────────────────────────── */
     useEffect(() => {
         if (bootDone.current) return; bootDone.current = true;
         void (async () => {
@@ -649,29 +536,31 @@ const App: React.FC = () => {
             try {
                 const localRecs = await createLocalDataStore(config.localStorageKey).list(); setRecords(localRecs);
                 if (config.preferredBackend === 'google' && config.google.clientId.trim() && normalizedSheetId) {
-                    try { await doGoogleAuth(false); const gRecs = await createGoogleSheetsDataStore(tokenRef, normalizedSheetId, effectiveTab).list(); setRecords(gRecs); setStatusMsg(t('google.msg.connected')); }
+                    try { await doGoogleAuth(false); const gRecs = await createGoogleSheetsDataStore(tokenRef, normalizedSheetId, effectiveTab).list(); setRecords(gRecs); addToast(t('google.msg.connected'), 'info'); }
                     catch (silentErr) { dbg('Silent google restore failed', silentErr); addToast(t('toast.silentAuthFailed'), 'warn', errMsg(silentErr)); }
                 }
             } catch (e) { showError(e); } finally { setIsBusy(false); }
         })();
     }, [addToast, config.google.clientId, config.localStorageKey, config.preferredBackend, doGoogleAuth, effectiveTab, normalizedSheetId, showError, t]);
 
-    /* ── Data actions ───────────────────────────────────────────────────── */
     const reloadRecords = useCallback(async () => { setIsBusy(true); try { setRecords(await dataStore.list()); } catch (e) { showError(e); } finally { setIsBusy(false); } }, [dataStore, showError]);
 
-    const handleGoogleConnect = useCallback(async () => { setIsBusy(true); setStatusMsg(''); try { await doGoogleAuth(true); setStatusMsg(t('google.msg.connected')); } catch (e) { showError(e); } finally { setIsBusy(false); } }, [doGoogleAuth, showError, t]);
-    const handleGoogleDisconnect = useCallback(() => { invalidateGoogle(); setConfig(prev => ({ ...prev, preferredBackend: 'local' })); createLocalDataStore(config.localStorageKey).list().then(r => setRecords(r)); setStatusMsg(t('google.msg.disconnected')); }, [config.localStorageKey, invalidateGoogle, t]);
+    const handleGoogleConnect = useCallback(async () => { setIsBusy(true); try { await doGoogleAuth(true); addToast(t('google.msg.connected'), 'info'); } catch (e) { showError(e); } finally { setIsBusy(false); } }, [addToast, doGoogleAuth, showError, t]);
 
-    const handleGoogleAttach = useCallback(async () => { setIsBusy(true); setStatusMsg(''); try { if (!normalizedSheetId) throw new Error(t('google.error.noSpreadsheet')); if (!tokenRef.current) await doGoogleAuth(true); await ensureSheet(tokenRef.current!, normalizedSheetId, effectiveTab); setConfig(prev => ({ ...prev, preferredBackend: 'google', google: { ...prev.google, spreadsheetId: normalizedSheetId, spreadsheetUrl: sheetUrl(normalizedSheetId), sheetName: effectiveTab } })); setRecords(await createGoogleSheetsDataStore(tokenRef, normalizedSheetId, effectiveTab).list()); setStatusMsg(t('google.msg.sheetAttached')); } catch (e) { showError(e); } finally { setIsBusy(false); } }, [doGoogleAuth, effectiveTab, normalizedSheetId, showError, t]);
+    const handleGoogleDisconnect = useCallback(() => {
+        invalidateGoogle();
+        setConfig(prev => ({ ...prev, preferredBackend: 'local' }));
+        createLocalDataStore(config.localStorageKey).list().then(r => setRecords(r));
+        addToast(t('google.msg.disconnected'), 'info');
+    }, [addToast, config.localStorageKey, invalidateGoogle, t]);
 
-    const handleGoogleCreate = useCallback(async () => { setIsBusy(true); setStatusMsg(''); try { if (!tokenRef.current) await doGoogleAuth(true); const title = config.google.spreadsheetId.startsWith('__CREATE__') ? config.google.spreadsheetId.replace('__CREATE__', '') : 'Google Sheets Store'; const created = await createSpreadsheet(tokenRef.current!, title, effectiveTab); setConfig(prev => ({ ...prev, preferredBackend: 'google', google: { ...prev.google, spreadsheetId: created.spreadsheetId, spreadsheetUrl: created.spreadsheetUrl, sheetName: effectiveTab } })); setRecords([]); setStatusMsg(t('google.msg.sheetCreated')); } catch (e) { showError(e); } finally { setIsBusy(false); } }, [config.google.spreadsheetId, doGoogleAuth, effectiveTab, showError, t]);
+    const handleGoogleAttach = useCallback(async () => { setIsBusy(true); try { if (!normalizedSheetId) throw new Error(t('google.error.noSpreadsheet')); if (!tokenRef.current) await doGoogleAuth(true); await ensureSheet(tokenRef.current!, normalizedSheetId, effectiveTab); setConfig(prev => ({ ...prev, preferredBackend: 'google', google: { ...prev.google, spreadsheetId: normalizedSheetId, spreadsheetUrl: sheetUrl(normalizedSheetId), sheetName: effectiveTab } })); setRecords(await createGoogleSheetsDataStore(tokenRef, normalizedSheetId, effectiveTab).list()); addToast(t('google.msg.sheetAttached'), 'info'); } catch (e) { showError(e); } finally { setIsBusy(false); } }, [addToast, doGoogleAuth, effectiveTab, normalizedSheetId, showError, t]);
 
-    /**
-     * Switch to Google Sheets backend.
-     * Used both from Settings and from the header toggle button.
-     */
+    const handleGoogleCreate = useCallback(async () => { setIsBusy(true); try { if (!tokenRef.current) await doGoogleAuth(true); const title = config.google.spreadsheetId.startsWith('__CREATE__') ? config.google.spreadsheetId.replace('__CREATE__', '') : 'Google Sheets Store'; const created = await createSpreadsheet(tokenRef.current!, title, effectiveTab); setConfig(prev => ({ ...prev, preferredBackend: 'google', google: { ...prev.google, spreadsheetId: created.spreadsheetId, spreadsheetUrl: created.spreadsheetUrl, sheetName: effectiveTab } })); setRecords([]); addToast(t('google.msg.sheetCreated'), 'info'); } catch (e) { showError(e); } finally { setIsBusy(false); } }, [addToast, config.google.spreadsheetId, doGoogleAuth, effectiveTab, showError, t]);
+
+    /** Switch to Google: auth if needed, ensure sheet, load records */
     const handleSwitchToGoogle = useCallback(async () => {
-        setIsBusy(true); setStatusMsg('');
+        setIsBusy(true);
         try {
             if (!normalizedSheetId) throw new Error(t('google.error.noSpreadsheet'));
             if (!tokenRef.current) await doGoogleAuth(true);
@@ -679,25 +568,22 @@ const App: React.FC = () => {
             setConfig(prev => ({ ...prev, preferredBackend: 'google' }));
             const gRecs = await createGoogleSheetsDataStore(tokenRef, normalizedSheetId, effectiveTab).list();
             setRecords(gRecs);
-            setStatusMsg(t('google.msg.switchedToGoogle'));
+            addToast(t('google.msg.switchedToGoogle'), 'info');
         } catch (e) { showError(e); }
         finally { setIsBusy(false); }
-    }, [doGoogleAuth, effectiveTab, normalizedSheetId, showError, t]);
+    }, [addToast, doGoogleAuth, effectiveTab, normalizedSheetId, showError, t]);
 
-    /**
-     * Switch to localStorage backend.
-     * Used both from Settings and from the header toggle button.
-     */
+    /** Switch to localStorage: update config, load local records */
     const handleSwitchToLocal = useCallback(() => {
         setConfig(prev => ({ ...prev, preferredBackend: 'local' }));
         createLocalDataStore(config.localStorageKey).list().then(r => setRecords(r));
-        setStatusMsg(t('google.msg.switchedToLocal'));
-    }, [config.localStorageKey, t]);
+        addToast(t('google.msg.switchedToLocal'), 'info');
+    }, [addToast, config.localStorageKey, t]);
 
     /**
-     * Header backend toggle button handler.
-     * - If currently local → attempt to connect Google & load Sheets data.
-     * - If currently google → switch to local & load localStorage data.
+     * Header backend toggle:
+     * - Currently local → connect to Google & auto-load
+     * - Currently google → switch to local & auto-load
      */
     const handleHeaderBackendToggle = useCallback(async () => {
         if (activeBackend === 'google') {
@@ -706,6 +592,14 @@ const App: React.FC = () => {
             await handleSwitchToGoogle();
         }
     }, [activeBackend, handleSwitchToGoogle, handleSwitchToLocal]);
+
+    /**
+     * Header disconnect button (visible only when Google is active):
+     * Revokes token, switches to local, loads local data.
+     */
+    const handleHeaderDisconnect = useCallback(() => {
+        handleGoogleDisconnect();
+    }, [handleGoogleDisconnect]);
 
     const handleAdd = useCallback(async (e: React.FormEvent<HTMLFormElement>) => { e.preventDefault(); const text = draftText.trim(); if (!text) return; setIsBusy(true); try { await dataStore.add(text); setRecords(await dataStore.list()); setDraftText(''); } catch (err) { showError(err); } finally { setIsBusy(false); } }, [dataStore, draftText, showError]);
     const handleDelete = useCallback(async (id: string) => { setIsBusy(true); try { await dataStore.remove(id); setRecords(await dataStore.list()); } catch (err) { showError(err); } finally { setIsBusy(false); } }, [dataStore, showError]);
@@ -720,9 +614,23 @@ const App: React.FC = () => {
                 <div className="mx-auto max-w-6xl flex items-center justify-between px-4 py-3">
                     <h1 className="text-lg font-bold tracking-tight">{t('header.title')}</h1>
                     <div className="flex items-center gap-1">
-                        {/* ── Backend toggle (visible when Google is configured) ── */}
+                        {/* ── Backend toggle group ──────────────────────────── */}
                         {showBackendToggle && (
                             <>
+                                {/* Disconnect button — only when Google is active */}
+                                {activeBackend === 'google' && (
+                                    <button
+                                        type="button"
+                                        onClick={handleHeaderDisconnect}
+                                        disabled={isBusy}
+                                        className="rounded-lg p-2 text-base leading-none text-rose-500 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-900/30 transition disabled:cursor-not-allowed disabled:opacity-50"
+                                        aria-label={t('header.backendToggle.disconnect')}
+                                        title={t('header.backendToggle.disconnect')}
+                                    >
+                                        🔌
+                                    </button>
+                                )}
+                                {/* Backend switch button */}
                                 <button
                                     type="button"
                                     onClick={handleHeaderBackendToggle}
@@ -737,16 +645,6 @@ const App: React.FC = () => {
                                 >
                                     {activeBackend === 'google' ? '☁️' : '💾'}
                                 </button>
-                                <button
-                                    type="button"
-                                    onClick={reloadRecords}
-                                    disabled={isBusy}
-                                    className="rounded-lg p-2 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition disabled:cursor-not-allowed disabled:opacity-50"
-                                    aria-label={t('header.backendToggle.reload')}
-                                    title={t('header.backendToggle.reload')}
-                                >
-                                    <IconRefresh className="w-4.5 h-4.5" />
-                                </button>
                                 <div className="w-px h-5 bg-slate-200 dark:bg-slate-700 mx-0.5" />
                             </>
                         )}
@@ -757,7 +655,6 @@ const App: React.FC = () => {
             </header>
             <main className="mx-auto max-w-6xl px-4 py-6">
                 {settingsVisible && <SettingsPanel config={config} setConfig={setConfig} recordCount={records.length} onClearData={handleClearAll} isBusy={isBusy} isClosing={settingsClosing} onCloseAnimEnd={handleSettingsCloseAnimEnd} isGoogleAuthed={isGoogleAuthed} googleEmail={googleEmail} onGoogleConnect={handleGoogleConnect} onGoogleDisconnect={handleGoogleDisconnect} onGoogleAttach={handleGoogleAttach} onGoogleCreate={handleGoogleCreate} onSwitchToGoogle={handleSwitchToGoogle} onSwitchToLocal={handleSwitchToLocal} t={t}/>}
-                {statusMsg && <div className="mb-4 rounded-2xl border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 p-4 text-sm text-blue-700 dark:text-blue-300 animate-fade-in">{statusMsg}</div>}
                 <div className="mb-4 flex items-center gap-2">
                     <span className="inline-flex items-center gap-1.5 rounded-full bg-slate-200 dark:bg-slate-800 px-3 py-1 text-xs font-medium text-slate-700 dark:text-slate-300">{activeBackend === 'google' ? <IconSheet className="w-3.5 h-3.5"/> : <IconDatabase className="w-3.5 h-3.5"/>}{activeBackend === 'google' ? t('backend.badge.google') : t('backend.badge.local')}</span>
                     <span className="text-xs text-slate-500 dark:text-slate-400">{pluralizeRecords(sortedRecords.length, t)}</span>

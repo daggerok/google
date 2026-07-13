@@ -1,0 +1,87 @@
+name: Dependency Updates
+on:
+  workflow_dispatch:
+    inputs:
+      target_branch:
+        description: Branch to update
+        required: true
+        default: master
+      commit_message:
+        description: Commit message
+        required: true
+        default: "chore(deps): update dependencies"
+permissions:
+  contents: write
+concurrency:
+  group: dependency-updates-${{ inputs.target_branch }}
+  cancel-in-progress: false
+jobs:
+  update-dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ensure push token is configured
+        env:
+          WORKFLOW_PUSH_TOKEN: ${{ secrets.WORKFLOW_PUSH_TOKEN }}
+        run: |
+          if [ -z "$WORKFLOW_PUSH_TOKEN" ]; then
+            echo "::error::Missing WORKFLOW_PUSH_TOKEN secret."
+            echo "::error::Use a PAT for pushes from this workflow so the resulting commit triggers push-based workflows such as GitHub Pages deploy."
+            exit 1
+          fi
+
+      - name: Checkout target branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target_branch }}
+          token: ${{ secrets.WORKFLOW_PUSH_TOKEN }}
+          fetch-depth: 0
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Cache Bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('**/package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: Update dependency versions
+        run: bunx npm-check-updates -u
+
+      - name: Install updated dependencies
+        run: bun install -E
+
+      - name: Validate application build
+        run: bun run build
+
+      - name: Validate GitHub Pages build
+        run: bun run build-github-pages
+
+      - name: Detect repository changes
+        id: changes
+        run: |
+          if git diff --quiet --exit-code; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit and push dependency updates
+        if: steps.changes.outputs.changed == 'true'
+        env:
+          TARGET_BRANCH: ${{ inputs.target_branch }}
+          COMMIT_MESSAGE: ${{ inputs.commit_message }}
+        run: |
+          git config user.name "Maksim Kostromin"
+          git config user.email "daggerok@gmail.com"
+          git add package.json bun.lock
+          git commit -m "$COMMIT_MESSAGE"
+          git push origin "HEAD:${TARGET_BRANCH}"
+
+      - name: No dependency updates found
+        if: steps.changes.outputs.changed != 'true'
+        run: echo "No dependency updates were found. Nothing to commit."

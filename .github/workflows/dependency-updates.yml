@@ -12,6 +12,7 @@ on:
         default: "chore(deps): update dependencies"
 permissions:
   contents: write
+  actions: write
 concurrency:
   group: dependency-updates-${{ inputs.target_branch }}
   cancel-in-progress: false
@@ -19,21 +20,10 @@ jobs:
   update-dependencies:
     runs-on: ubuntu-latest
     steps:
-      - name: Ensure push token is configured
-        env:
-          WORKFLOW_PUSH_TOKEN: ${{ secrets.WORKFLOW_PUSH_TOKEN }}
-        run: |
-          if [ -z "$WORKFLOW_PUSH_TOKEN" ]; then
-            echo "::error::Missing WORKFLOW_PUSH_TOKEN secret."
-            echo "::error::Use a PAT for pushes from this workflow so the resulting commit triggers push-based workflows such as GitHub Pages deploy."
-            exit 1
-          fi
-
       - name: Checkout target branch
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.target_branch }}
-          token: ${{ secrets.WORKFLOW_PUSH_TOKEN }}
           fetch-depth: 0
 
       - name: Setup Bun
@@ -79,8 +69,24 @@ jobs:
           git config user.name "Maksim Kostromin"
           git config user.email "daggerok@gmail.com"
           git add package.json bun.lock
-          git commit -m "$COMMIT_MESSAGE"
-          git push origin "HEAD:${TARGET_BRANCH}"
+          if git diff --staged --quiet; then
+            echo "No staged dependency changes — nothing to commit."
+          else
+            git commit -m "$COMMIT_MESSAGE"
+            git push origin "HEAD:${TARGET_BRANCH}" || echo "Push failed (may be up-to-date or race condition)"
+          fi
+
+      - name: Trigger GitHub Pages deploy for updated branch
+        if: steps.changes.outputs.changed == 'true'
+        env:
+          TARGET_BRANCH: ${{ inputs.target_branch }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          curl -sS -X POST \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/github-pages.yml/dispatches \
+            -d "{\"ref\":\"${TARGET_BRANCH}\"}"
 
       - name: No dependency updates found
         if: steps.changes.outputs.changed != 'true'

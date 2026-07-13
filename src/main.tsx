@@ -112,9 +112,10 @@ const DICTIONARIES: Record<Locale, Record<string, string>> = {
         'data.mode.search': 'Search mode', 'data.mode.add': 'Add mode',
         'data.col.index': '#', 'data.col.text': 'Text', 'data.col.created': 'Created', 'data.col.actions': '',
         'data.empty': 'Nothing here yet. Add your first record.', 'data.emptySearch': 'No records match your search.',
-        'data.delete': 'Delete', 'data.loadMore': 'Load more',
+        'data.delete': 'Delete', 'data.loadMore': 'Load more', 'data.found': 'found',
         'backend.badge.local': 'localStorage', 'backend.badge.google': 'Google Sheets',
         'data.records.0': 'records', 'data.records.1': 'record', 'data.records.few': 'records', 'data.records.many': 'records',
+        'google.defaultDocTitle': 'Google Sheets Store',
         'loading': 'Loading...', 'debug.title': '🐛 Debug info',
     },
     ru: {
@@ -675,7 +676,7 @@ const SettingsGoogleTab: React.FC<{
           onToLocal,
           t
       }) => {
-    const [nt, setNt] = useState('Google Sheets Store');
+    const [nt, setNt] = useState(t('google.defaultDocTitle'));
     const hc = Boolean(config.google.clientId.trim());
     const hs = Boolean(nid(config.google.spreadsheetId));
     const bp = 'inline-flex items-center gap-1.5 rounded-lg bg-slate-900 dark:bg-slate-100 px-3 py-2 text-xs font-medium text-white dark:text-slate-900 transition hover:bg-slate-800 dark:hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-50';
@@ -1101,7 +1102,7 @@ const App: React.FC = () => {
     }), [addToast, bgOp, doAuth, etab, nsid, t]);
     const onCreateSheet = useCallback(() => bgOp(async () => {
         if (!tokRef.current) await doAuth(true);
-        const title = config.google.spreadsheetId.startsWith('__CREATE__') ? config.google.spreadsheetId.replace('__CREATE__', '') : 'Google Sheets Store';
+        const title = config.google.spreadsheetId.startsWith('__CREATE__') ? (config.google.spreadsheetId.replace('__CREATE__', '').trim() || t('google.defaultDocTitle')) : t('google.defaultDocTitle');
         const cr = await cs(tokRef.current!, title, etab);
         setConfig(p => ({
             ...p,
@@ -1254,7 +1255,7 @@ const App: React.FC = () => {
                 {settingsVisible && <SettingsPanel config={config} setConfig={setConfig} recordCount={records.length} onClearData={handleClear} isSyncing={isSyncing} isClosing={settingsClosing} onCloseEnd={onCloseEnd} isAuthed={isAuthed} email={gEmail} onConnect={onConnect} onDisconnect={onDisconnect} onAttach={onAttach} onCreate={onCreateSheet} onToGoogle={toGoogle} onToLocal={toLocal} t={t}/>}
                 <div className="mb-4 flex items-center gap-2">
                     <span className="inline-flex items-center gap-1.5 rounded-full bg-slate-200 dark:bg-slate-800 px-3 py-1 text-xs font-medium text-slate-700 dark:text-slate-300">{activeBackend === 'google' ? <IconSheet className="w-3.5 h-3.5"/> : <IconDatabase className="w-3.5 h-3.5"/>}{activeBackend === 'google' ? t('backend.badge.google') : t('backend.badge.local')}</span>
-                    <span className="text-xs text-slate-500 dark:text-slate-400">{plur(records.length, t)}{searchQuery && ` · ${filteredRecords.length} found`}</span>
+                    <span className="text-xs text-slate-500 dark:text-slate-400">{plur(records.length, t)}{searchQuery && ` · ${filteredRecords.length} ${t('data.found')}`}</span>
                 </div>
 
                 {/* Unified input bar */}

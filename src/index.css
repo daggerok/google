@@ -16,12 +16,13 @@
  * AGENTIC AI DOCUMENTATION & SYSTEM ARCHITECTURE
  * ============================================================================
  *
- * PROJECT: Google Sheets Store — Global Styles
+ * PROJECT: Google Sheets Store — Global Styles (YouTube Parity)
  * ENVIRONMENT: TailwindCSS v4 (CSS-in-JS style configuration)
  *
  * MODULES & FEATURES:
  * 1. [Tailwind Engine & Variants]
  * - `@variant dark`: scoped dark mode via `.dark` class on <html>.
+ * - Inter font family (300-700) via Google Fonts.
  *
  * 2. [Animation System]
  * - shake, fadeIn, slideDown, slideUp: settings panel & feedback
@@ -30,7 +31,16 @@
  * - spin: spinner rotation
  *
  * 3. [Scrollbar Theming]
- * - `.table-container` and `.themed-scroll` classes
+ * - `.table-container` and `.themed-scroll` classes (legacy)
+ * - `.dark-scroll` / `.light-scroll` (YouTube parity)
+ *
+ * 4. [YouTube Parity Additions]
+ * - .console-wrap / .settings-wrap grid animations (zero-click UX)
+ * - .debug-panel table styling
+ * - input[type=range].scale-slider styling
+ * - html.dark background #020617 overrides
+ * - .has-tip tooltip
+ * - Inter font smoothing & slate palette parity
  * ============================================================================
  */
 
@@ -92,6 +102,14 @@
 }
 
 /* ============================================================================
+ * FONT & BASE
+ * ============================================================================ */
+
+* {
+    font-family: 'Inter', sans-serif;
+}
+
+/* ============================================================================
  * SCROLLBAR THEMING
  * ============================================================================ */
 
@@ -137,3 +155,96 @@
 .themed-scroll::-webkit-scrollbar-corner {
     background: transparent;
 }
+
+/* YouTube parity scrollbars */
+.dark-scroll::-webkit-scrollbar{height:6px;width:6px}
+.dark-scroll::-webkit-scrollbar-track{background:transparent}
+.dark-scroll::-webkit-scrollbar-thumb{background:#334155;border-radius:3px}
+.dark-scroll{scrollbar-width:thin;scrollbar-color:#334155 transparent}
+
+.light-scroll::-webkit-scrollbar{height:6px;width:6px}
+.light-scroll::-webkit-scrollbar-track{background:transparent}
+.light-scroll::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:3px}
+.light-scroll{scrollbar-width:thin;scrollbar-color:#cbd5e1 transparent}
+
+/* ============================================================================
+ * YOUTUBE PARITY — Animated wrappers
+ * ============================================================================ */
+
+.console-wrap{display:grid;grid-template-rows:0fr;transition:grid-template-rows .25s ease-out,opacity .25s ease-out;opacity:0;overflow:hidden}
+.console-wrap.open{grid-template-rows:1fr;opacity:1}
+.console-inner{overflow:hidden;min-height:0}
+
+.settings-wrap{display:grid;grid-template-rows:0fr;transition:grid-template-rows .35s cubic-bezier(0.4, 0, 0.2, 1), opacity .25s ease-out;opacity:0;overflow:hidden}
+.settings-wrap.open{grid-template-rows:1fr;opacity:1}
+.settings-inner{overflow:hidden;min-height:0}
+
+.debug-panel {
+    font-size: 12px;
+    border-radius: 8px;
+}
+.debug-panel table { font-size: 11px; }
+.debug-row { transition: background .1s; }
+.debug-row:hover { background: rgba(148,163,184,0.08); }
+
+/* ============================================================================
+ * RANGE SLIDER (YouTube parity)
+ * ============================================================================ */
+
+input[type=range].scale-slider{-webkit-appearance:none;appearance:none;height:4px;border-radius:2px;outline:none;cursor:pointer}
+input[type=range].scale-slider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:14px;height:14px;border-radius:50%;cursor:pointer}
+input[type=range].scale-slider::-moz-range-thumb{width:14px;height:14px;border-radius:50%;cursor:pointer;border:none}
+.dark input[type=range].scale-slider{background:#334155}
+.dark input[type=range].scale-slider::-webkit-slider-thumb{background:#10b981}
+.dark input[type=range].scale-slider::-moz-range-thumb{background:#10b981}
+html:not(.dark) input[type=range].scale-slider{background:#cbd5e1}
+html:not(.dark) input[type=range].scale-slider::-webkit-slider-thumb{background:#059669}
+html:not(.dark) input[type=range].scale-slider::-moz-range-thumb{background:#059669}
+
+/* ============================================================================
+ * DARK BACKGROUND PARITY
+ * ============================================================================ */
+
+html.dark, html.dark body { background:#020617 !important; color:#f1f5f9 !important; color-scheme: dark; }
+html.dark table { color:#e2e8f0; }
+html.dark table td { color:inherit; }
+html.dark table th { color:#94a3b8; }
+
+/* ============================================================================
+ * TOOLTIP
+ * ============================================================================ */
+
+.has-tip { position: relative; }
+.has-tip::after {
+    content: attr(data-tip);
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 50%;
+    transform: translateX(-50%) translateY(4px);
+    background: #0f172a;
+    color: #f8fafc;
+    font-size: 10px;
+    line-height: 1.2;
+    font-weight: 600;
+    white-space: nowrap;
+    padding: 4px 7px;
+    border-radius: 6px;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity .12s ease, transform .12s ease;
+    z-index: 40;
+    box-shadow: 0 4px 12px rgba(0,0,0,.25);
+}
+html:not(.dark) .has-tip::after { background: #1e293b; color: #f8fafc; }
+.has-tip:hover::after, .has-tip:focus-visible::after {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+}
+
+/* ============================================================================
+ * LEGACY animate classes for parity
+ * ============================================================================ */
+
+.animate-slide-down { animation: slideDown 0.2s ease-out forwards; }
+.animate-slide-up { animation: slideUp 0.2s ease-out forwards; }
+.animate-fade-in{animation:fadeIn .4s ease-out}

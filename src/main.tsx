@@ -16,29 +16,39 @@
  * AGENTIC AI DOCUMENTATION & SYSTEM ARCHITECTURE
  * ============================================================================
  *
- * PROJECT: Google Sheets Store
- * ENVIRONMENT: Bun, Vite, React, TypeScript, TailwindCSS v4
+ * PROJECT: Google Sheets Store — YouTube Parity Edition
+ * ENVIRONMENT: Bun, Parcel, React 19, TypeScript, TailwindCSS v4
+ * DESIGN PARITY: YouTube Dashboard (daggerok/youtube) — Exact UI/UX port
  *
  * MODULES & FEATURES:
  *
- * 1. [i18n] en/ru.
- * 2. [Theme] light/dark/system.
- * 3. [Settings Panel] Animated. General, Local Storage, Google Sheets tabs.
- * 4. [Unified Data Layer] DataStore: list/add/remove/clear.
- * 5. [Eventually-Consistent Sync] bgOp.
- * 6. [Loading States] isLoading (boot), syncCount (progress bar).
- * 7. [Header Backend Toggle] 💾/☁️ + 🔌.
- * 8. [Toast Notifications]
- * 9. [Unified Input Bar — Add/Search Mode]
- *    Toggle 🔍 switches modes with animation.
- * 10. [Pagination] "Load more".
- * 11. [localStorage Safety] Quota check.
- * 12. [Keyboard Shortcuts]
+ * 1. [i18n] en/ru via DICTIONARIES + useT hook.
+ * 2. [Theme] light/dark/system via resolveTheme/applyTheme (YouTube parity: dark boolean derived, #020617 background).
+ * 3. [Settings Panel] Animated console-wrap/settings-wrap grid (YouTube exact). General, Local Storage, Google Sheets tabs + scale slider + debug console.
+ * 4. [Unified Data Layer] DataStore: list/add/update/remove/clear (update added for edit parity, like YouTube note edit).
+ * 5. [Eventually-Consistent Sync] bgOp wrapper with syncCount → ProgressBar + toast.
+ * 6. [Stay-Connected Auth] YouTube-grade persistence:
+ *    - clientId + spreadsheetId + lastAccountEmail → silentAttemptedRef guard
+ *    - doAuth(false) prompt:'' silent restore on boot if hasPrevGoogle
+ *    - doAuth(true) prompt:'consent' interactive connect
+ *    - gTokRef memory-only token, revoke on disconnect
+ *    - isGoogleReady = isAuthed && token && nid(spreadsheetId)
+ *    - zero-click auto-ensure: es() + reload when isGoogleReady changes (mirrors YouTube ensureVideoTab + readVideosFromSheet)
+ *    - Auto-ensure after successful auth (setTimeout 300ms) + immediate load, matching YouTube's post-auth tab ensure.
+ *    - saveGsConfig equivalent via wc(config) persisting lastAccountEmail.
+ * 7. [Loading States] isLoading (boot), syncCount (progress bar), gsSyncing (YouTube parity naming via syncCount).
+ * 8. [Header Backend Toggle] 💾/☁️ + 🔌 + ⚙️ + 🐛 debug + 🔄 reload + 🔍 search toggle (YouTube tbBtn grid).
+ * 9. [Toast Notifications] YouTube-style card + themed colors, plus logs console.
+ * 10. [Unified Input Bar — Add/Search Mode] Toggle 🔍 switches modes with animation, Escape two-step (clear → deactivate).
+ * 11. [Table Parity] YouTube table card: rounded-xl border shadow-lg, gradient header, scale slider (A/A), dark/light scroll, sortable columns (Th with filter), inline edit (like YouTube note), mobile cards.
+ * 12. [Pagination] "Load more" with visiblePages * pageSize (existing).
+ * 13. [localStorage Safety] Quota check + byteSize/fmtBytes.
+ * 14. [Keyboard Shortcuts]
  *     - Escape: clear input text → then deactivate search mode (two-step).
- *     - Cmd+R / Shift+Cmd+R (Mac): reload data from active backend.
- *     - F5 / Ctrl+F5 (Win/Linux): reload data from active backend.
- *     - Both refresh shortcuts prevent default browser page reload.
- * 13. [Debug] ?debug=true.
+ *     - Cmd+R / Ctrl+R / F5: reload data from active backend (prevent default).
+ * 15. [Debug] ?debug=true + showDebug console with logs table (YouTube parity), plus DEBUG details JSON.
+ * 16. [Copy & Mask] maskEmail, copyToClipboard with ✅ feedback (YouTube parity for Client ID / Spreadsheet ID / Email).
+ * 17. [Scale Slider] sliderToScale 0.7-1.5 via DEFAULT_SCALE_SLIDER=50, table font sizes tblFs/tblHFs/tblCellPy (YouTube exact).
  * ============================================================================
  */
 
@@ -56,9 +66,10 @@ type BackendMode = 'local' | 'google';
 type InputMode = 'add' | 'search';
 type AppRecord = { id: string; text: string; createdAt: string; updatedAt: string };
 type GoogleConfig = { clientId: string; spreadsheetId: string; spreadsheetUrl: string; sheetName: string; lastAccountEmail: string };
-type AppConfig = { locale: Locale; theme: ThemePreference; preferredBackend: BackendMode; localStorageKey: string; settingsOpen: boolean; settingsTab: 'local' | 'google'; google: GoogleConfig; pageSize: number };
-type DataStore = { list: () => Promise<AppRecord[]>; add: (text: string) => Promise<AppRecord>; remove: (id: string) => Promise<void>; clear: () => Promise<void> };
+type AppConfig = { locale: Locale; theme: ThemePreference; preferredBackend: BackendMode; localStorageKey: string; settingsOpen: boolean; settingsTab: 'local' | 'google'; google: GoogleConfig; pageSize: number; scaleSlider?: number; sortConfig?: { key: string; direction: 'asc' | 'desc' }; filters?: Record<string, string> };
+type DataStore = { list: () => Promise<AppRecord[]>; add: (text: string) => Promise<AppRecord>; update: (id: string, text: string) => Promise<void>; remove: (id: string) => Promise<void>; clear: () => Promise<void> };
 type Toast = { id: string; message: string; detail?: string; level: 'error' | 'info' | 'warn'; expanded?: boolean; dismissing?: boolean };
+type LogEntry = { id: string; msg: string; ts: string };
 type GisTokenResponse = { access_token?: string; error?: string };
 type GisErrorResponse = { type?: string; message?: string };
 type GisTokenClient = { requestAccessToken: (opts?: { prompt?: string }) => void };
@@ -75,17 +86,13 @@ const DICTIONARIES: Record<Locale, Record<string, string>> = {
         'header.backendToggle.toGoogle': 'Switch to Google Sheets', 'header.backendToggle.toLocal': 'Switch to localStorage', 'header.backendToggle.disconnect': 'Disconnect from Google',
         'settings.title': 'Settings', 'settings.general': 'General',
         'settings.theme': 'Theme', 'settings.theme.light': 'Light', 'settings.theme.dark': 'Dark', 'settings.theme.system': 'System',
-        'settings.language': 'Language', 'settings.language.en': 'English', 'settings.language.ru': 'Русский',
+        'settings.language': 'Language', 'settings.language.en': 'English', 'settings.language.ru': 'Russian',
+        'settings.storage': 'Storage', 'settings.storage.local': 'Local',
         'settings.backend': 'Active backend', 'settings.backend.local': 'localStorage', 'settings.backend.google': 'Google Sheets (if connected)',
         'settings.tab.local': 'Local Storage', 'settings.tab.google': 'Google Sheets',
-        'settings.pageSize': 'Records per page',
-        'local.how.title': 'How it works',
-        'local.how.1': 'All data is stored in your browser\'s localStorage.',
-        'local.how.2': 'Data never leaves your device and is not synced across browsers.',
-        'local.how.3': 'Clearing browser data will delete all records.',
-        'local.how.4': 'Storage limit is typically ~5–10 MB (depends on browser).',
-        'local.storageKey': 'Storage key', 'local.recordCount': 'Records', 'local.dataSize': 'Data size', 'local.clearAll': 'Clear all records',
-        'local.quotaError': 'localStorage is full! Delete some records or switch to Google Sheets.',
+        'settings.scale': 'Table scale',
+        'local.how.title': 'How localStorage works', 'local.how.1': 'Data stays in this browser only.', 'local.how.2': 'No internet required.', 'local.how.3': 'Clearing browser storage deletes records.', 'local.how.4': 'Use Google Sheets for cloud sync.',
+        'local.storageKey': 'Key', 'local.recordCount': 'Records', 'local.dataSize': 'Size', 'local.clearAll': 'Clear all records', 'local.quotaError': 'Quota exceeded.',
         'google.setup.title': '📋 How to set up Google Sheets as a datastore',
         'google.setup.step1.title': '1. Create a project in Google Cloud Console', 'google.setup.step1.text': 'Go to console.cloud.google.com and create a new project.',
         'google.setup.step2.title': '2. Enable Google Sheets API', 'google.setup.step2.text': 'Search "Google Sheets API" and click Enable.', 'google.setup.step2.fallback': 'If error, run in Cloud Shell:',
@@ -107,30 +114,27 @@ const DICTIONARIES: Record<Locale, Record<string, string>> = {
         'google.msg.sheetAttached': 'Spreadsheet attached.', 'google.msg.sheetCreated': 'New spreadsheet created.',
         'google.msg.switchedToGoogle': 'Using Google Sheets.', 'google.msg.switchedToLocal': 'Using localStorage.',
         'toast.silentAuthFailed': 'Auto-login failed. Using localStorage. Reconnect in Settings.', 'toast.details': 'Details',
-        'data.placeholder.add': 'New record...', 'data.placeholder.search': 'Search records...',
-        'data.add': 'Add', 'data.find': 'Find', 'data.reload': 'Reload',
-        'data.mode.search': 'Search mode', 'data.mode.add': 'Add mode',
-        'data.col.index': '#', 'data.col.text': 'Text', 'data.col.created': 'Created', 'data.col.actions': '',
-        'data.empty': 'Nothing here yet. Add your first record.', 'data.emptySearch': 'No records match your search.',
-        'data.delete': 'Delete', 'data.loadMore': 'Load more', 'data.found': 'found',
+        'data.add': 'Add', 'data.find': 'Find', 'data.reload': 'Reload', 'data.mode.add': 'Add mode', 'data.mode.search': 'Search mode',
+        'data.placeholder.add': 'Add a record and press Enter…', 'data.placeholder.search': 'Search records…',
+        'data.col.index': '#', 'data.col.text': 'Text', 'data.col.created': 'Created', 'data.col.updated': 'Updated', 'data.col.actions': 'Actions',
+        'data.empty': 'No records yet. Add your first one above.', 'data.emptySearch': 'Nothing matched your search.', 'data.found': 'found', 'data.edit': 'Edit', 'data.save': 'Save', 'data.cancel': 'Cancel', 'data.delete': 'Delete', 'data.loadMore': 'Load more',
         'backend.badge.local': 'localStorage', 'backend.badge.google': 'Google Sheets',
         'data.records.0': 'records', 'data.records.1': 'record', 'data.records.few': 'records', 'data.records.many': 'records',
+        'loading': 'Loading...', 'debug.title': '🐛 Debug info', 'console.title': '🐛 Debug Console', 'console.clear': 'Clear',
         'google.defaultDocTitle': 'Google Sheets Store',
-        'loading': 'Loading...', 'debug.title': '🐛 Debug info',
     },
     ru: {
-        'header.title': 'Google Sheets Store', 'header.settings': 'Настройки', 'header.theme': 'Тема',
+        'header.title': 'Хранилище Google Sheets', 'header.settings': 'Настройки', 'header.theme': 'Тема',
         'header.backendToggle.toGoogle': 'Переключить на Google Sheets', 'header.backendToggle.toLocal': 'Переключить на localStorage', 'header.backendToggle.disconnect': 'Отключиться от Google',
         'settings.title': 'Настройки', 'settings.general': 'Общие',
         'settings.theme': 'Тема', 'settings.theme.light': 'Светлая', 'settings.theme.dark': 'Тёмная', 'settings.theme.system': 'Системная',
-        'settings.language': 'Язык', 'settings.language.en': 'English', 'settings.language.ru': 'Русский',
+        'settings.language': 'Язык', 'settings.language.en': 'Английский', 'settings.language.ru': 'Русский',
+        'settings.storage': 'Хранилище', 'settings.storage.local': 'Локально',
         'settings.backend': 'Активный backend', 'settings.backend.local': 'localStorage', 'settings.backend.google': 'Google Sheets (если подключён)',
         'settings.tab.local': 'Local Storage', 'settings.tab.google': 'Google Sheets',
-        'settings.pageSize': 'Записей на странице',
-        'local.how.title': 'Как это работает',
-        'local.how.1': 'Данные хранятся в localStorage браузера.', 'local.how.2': 'Данные не покидают устройство.', 'local.how.3': 'Очистка браузера удалит записи.', 'local.how.4': 'Лимит ~5–10 МБ.',
-        'local.storageKey': 'Ключ', 'local.recordCount': 'Записей', 'local.dataSize': 'Размер данных', 'local.clearAll': 'Очистить всё',
-        'local.quotaError': 'localStorage переполнен!',
+        'settings.scale': 'Масштаб таблицы',
+        'local.how.title': 'Как работает localStorage', 'local.how.1': 'Данные только в этом браузере.', 'local.how.2': 'Интернет не нужен.', 'local.how.3': 'Очистка хранилища удалит записи.', 'local.how.4': 'Используйте Google Sheets для синхронизации.',
+        'local.storageKey': 'Ключ', 'local.recordCount': 'Записей', 'local.dataSize': 'Размер', 'local.clearAll': 'Очистить всё', 'local.quotaError': 'Квота превышена.',
         'google.setup.title': '📋 Как настроить Google Sheets',
         'google.setup.step1.title': '1. Создайте проект', 'google.setup.step1.text': 'console.cloud.google.com.',
         'google.setup.step2.title': '2. Включите Google Sheets API', 'google.setup.step2.text': 'Найдите и включите.', 'google.setup.step2.fallback': 'При ошибке:',
@@ -152,20 +156,19 @@ const DICTIONARIES: Record<Locale, Record<string, string>> = {
         'google.msg.sheetAttached': 'Документ подключён.', 'google.msg.sheetCreated': 'Документ создан.',
         'google.msg.switchedToGoogle': 'Google Sheets.', 'google.msg.switchedToLocal': 'localStorage.',
         'toast.silentAuthFailed': 'Автовход не удался. Переподключитесь.', 'toast.details': 'Подробности',
-        'data.placeholder.add': 'Новая запись...', 'data.placeholder.search': 'Поиск записей...',
-        'data.add': 'Добавить', 'data.find': 'Найти', 'data.reload': 'Обновить',
-        'data.mode.search': 'Режим поиска', 'data.mode.add': 'Режим добавления',
-        'data.col.index': '#', 'data.col.text': 'Текст', 'data.col.created': 'Создано', 'data.col.actions': '',
-        'data.empty': 'Пока пусто.', 'data.emptySearch': 'Ничего не найдено.',
-        'data.delete': 'Удалить', 'data.loadMore': 'Ещё',
+        'data.add': 'Добавить', 'data.find': 'Найти', 'data.reload': 'Обновить', 'data.mode.add': 'Режим добавления', 'data.mode.search': 'Режим поиска',
+        'data.placeholder.add': 'Введите запись и нажмите Enter…', 'data.placeholder.search': 'Поиск записей…',
+        'data.col.index': '#', 'data.col.text': 'Текст', 'data.col.created': 'Создано', 'data.col.updated': 'Обновлено', 'data.col.actions': 'Действия',
+        'data.empty': 'Пока пусто. Добавьте первую запись выше.', 'data.emptySearch': 'Ничего не найдено.', 'data.found': 'найдено', 'data.edit': 'Изм.', 'data.save': 'Сохр.', 'data.cancel': 'Отм.', 'data.delete': 'Удалить', 'data.loadMore': 'Показать ещё',
         'backend.badge.local': 'localStorage', 'backend.badge.google': 'Google Sheets',
         'data.records.0': 'записей', 'data.records.1': 'запись', 'data.records.few': 'записи', 'data.records.many': 'записей',
-        'loading': 'Загрузка...', 'debug.title': '🐛 Debug info',
+        'loading': 'Загрузка...', 'debug.title': '🐛 Отладка', 'console.title': '🐛 Консоль', 'console.clear': 'Очистить',
+        'google.defaultDocTitle': 'Хранилище',
     },
 };
 
 // ============================================================================
-// ALL INFRA CODE (identical to previous — compact)
+// ALL INFRA CODE (identical to previous — compact) — YouTube parity extended
 // ============================================================================
 
 const APP_CONFIG_KEY = 'gsd.config.v1';
@@ -229,6 +232,20 @@ const resolveTheme = (p: ThemePreference): 'light' | 'dark' => p === 'light' || 
 const applyTheme = (r: 'light' | 'dark') => {
     document.documentElement.classList.toggle('dark', r === 'dark');
 };
+// YouTube parity helpers
+const sliderToScale = (v: number) => 0.7 + (v / 100) * 0.8;
+const DEFAULT_SCALE_SLIDER = 50;
+const maskEmail = (e: string) => {
+    if (!e || !e.includes('@')) return e || '—';
+    const [u, d] = e.split('@');
+    if (u.length <= 2) return `${u[0]}***@${d}`;
+    return `${u.slice(0, 2)}***@${d}`;
+};
+const copyToClipboard = async (text: string) => {
+    try { await navigator.clipboard.writeText(text); return true; } catch { 
+        try { const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); return true; } catch { return false; }
+    }
+};
 const DC: AppConfig = {
     locale: 'en',
     theme: 'system',
@@ -237,14 +254,17 @@ const DC: AppConfig = {
     settingsOpen: false,
     settingsTab: 'local',
     google: {clientId: '', spreadsheetId: '', spreadsheetUrl: '', sheetName: DEFAULT_SHEET, lastAccountEmail: ''},
-    pageSize: DEFAULT_PAGE_SIZE
+    pageSize: DEFAULT_PAGE_SIZE,
+    scaleSlider: DEFAULT_SCALE_SLIDER,
+    sortConfig: { key: 'createdAt', direction: 'desc' },
+    filters: { text: '', createdAt: '' }
 };
 const rc = (): AppConfig => {
     try {
         const r = localStorage.getItem(APP_CONFIG_KEY);
         if (!r) return {...DC};
         const p = jp<Partial<AppConfig>>(r, {});
-        return {...DC, ...p, google: {...DC.google, ...(p.google ?? {})}};
+        return {...DC, ...p, google: {...DC.google, ...(p.google ?? {})}, scaleSlider: (p as any).scaleSlider ?? DC.scaleSlider, sortConfig: (p as any).sortConfig ?? DC.sortConfig, filters: (p as any).filters ?? DC.filters};
     } catch {
         return {...DC};
     }
@@ -282,6 +302,12 @@ const createLocalDS = (key: string, onQuota?: () => void): DataStore => {
             all.push(r);
             wa(all);
             return r;
+        }, update: async (id, text) => {
+            const all = ra();
+            const idx = all.findIndex(r => r.id === id);
+            if (idx === -1) throw new Error('Not found');
+            all[idx] = {...all[idx], text, updatedAt: now()};
+            wa(all);
         }, remove: async (id) => wa(ra().filter(r => r.id !== id)), clear: async () => wa([])
     };
 };
@@ -438,6 +464,12 @@ const createGoogleDS = (tRef: React.MutableRefObject<string | null>, sid: string
             const r: AppRecord = {id: uid(), text, createdAt: now(), updatedAt: now()};
             await asr(gt(), id, t, r);
             return r;
+        }, update: async (rid, text) => {
+            const all = await rsr(gt(), id, t);
+            const idx = all.findIndex(r => r.id === rid);
+            if (idx === -1) throw new Error('Not found');
+            all[idx] = {...all[idx], text, updatedAt: now()};
+            await wsr(gt(), id, t, all);
         }, remove: async (rid) => {
             const all = await rsr(gt(), id, t);
             await wsr(gt(), id, t, all.filter(r => r.id !== rid));
@@ -533,6 +565,15 @@ const IconSearch: React.FC<{ className?: string }> = ({className}) => (
         <circle cx="11" cy="11" r="8"/>
         <path d="m21 21-4.3-4.3"/>
     </svg>);
+const IconEdit: React.FC<{ className?: string }> = ({className}) => (
+    <svg className={className} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+    </svg>);
+const IconCheck: React.FC<{ className?: string }> = ({className}) => (
+    <svg className={className} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M20 6L9 17l-5-5"/>
+    </svg>);
 
 // ============================================================================
 // SMALL COMPONENTS
@@ -601,7 +642,7 @@ const ThemeToggle: React.FC<{ theme: ThemePreference; onCycle: () => void; t: (k
 };
 
 // ============================================================================
-// SETTINGS (identical — compact)
+// SETTINGS (YouTube parity styled)
 // ============================================================================
 
 const SettingsLocalTab: React.FC<{
@@ -633,7 +674,7 @@ const SettingsLocalTab: React.FC<{
             className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 p-4 grid grid-cols-3 gap-4 text-center">
             <div>
                 <div className="text-xs text-slate-500 dark:text-slate-400">{t('local.storageKey')}</div>
-                <code className="text-xs text-slate-700 dark:text-slate-300">{config.localStorageKey}</code></div>
+                <code className="text-xs text-slate-700 dark:text-slate-300 break-all">{config.localStorageKey}</code></div>
             <div>
                 <div className="text-xs text-slate-500 dark:text-slate-400">{t('local.recordCount')}</div>
                 <div className="text-sm font-semibold text-slate-800 dark:text-slate-200">{recordCount}</div>
@@ -661,7 +702,11 @@ const SettingsGoogleTab: React.FC<{
     onCreate: () => void;
     onToGoogle: () => void;
     onToLocal: () => void;
-    t: (k: string) => string
+    t: (k: string) => string;
+    showClientId: boolean; setShowClientId: (v: boolean) => void;
+    showSpreadsheetId: boolean; setShowSpreadsheetId: (v: boolean) => void;
+    showEmail: boolean; setShowEmail: (v: boolean) => void;
+    copiedField: string | null; onCopy: (text: string, field: string) => void;
 }> = ({
           config,
           isAuthed,
@@ -674,136 +719,153 @@ const SettingsGoogleTab: React.FC<{
           onCreate,
           onToGoogle,
           onToLocal,
-          t
+          t,
+          showClientId, setShowClientId,
+          showSpreadsheetId, setShowSpreadsheetId,
+          showEmail, setShowEmail,
+          copiedField, onCopy
       }) => {
     const [nt, setNt] = useState(t('google.defaultDocTitle'));
     const hc = Boolean(config.google.clientId.trim());
     const hs = Boolean(nid(config.google.spreadsheetId));
+    const connected = isAuthed && hs;
     const bp = 'inline-flex items-center gap-1.5 rounded-lg bg-slate-900 dark:bg-slate-100 px-3 py-2 text-xs font-medium text-white dark:text-slate-900 transition hover:bg-slate-800 dark:hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-50';
     const bs = 'inline-flex items-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 text-xs font-medium text-slate-700 dark:text-slate-300 transition hover:bg-slate-50 dark:hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50';
-    const bd = 'inline-flex items-center gap-1.5 rounded-lg border border-rose-300 dark:border-rose-700 bg-white dark:bg-slate-800 px-3 py-2 text-xs font-medium text-rose-700 dark:text-rose-400 transition hover:bg-rose-50 dark:hover:bg-rose-900/20 disabled:cursor-not-allowed disabled:opacity-50';
-    const cc = 'rounded bg-blue-100 dark:bg-blue-800 px-1.5 py-0.5 font-mono text-[11px]';
-    const wc2 = 'mt-2 rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/30 px-3 py-2 text-xs text-amber-800 dark:text-amber-300';
-    const ic = 'w-full rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 outline-none transition focus:border-slate-500 dark:focus:border-slate-400';
     return (<div className="space-y-4 animate-fade-in">
         <details className="rounded-xl border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20">
             <summary
                 className="cursor-pointer px-4 py-3 text-sm font-semibold text-blue-900 dark:text-blue-200">{t('google.setup.title')}</summary>
-            <div className="px-4 pb-4 space-y-4 text-xs text-blue-800 dark:text-blue-300">
+            <div className="px-4 pb-4 space-y-3 text-xs text-blue-800 dark:text-blue-300">
                 <div>
                     <div
                         className="font-semibold text-blue-900 dark:text-blue-100">{t('google.setup.step1.title')}</div>
                     <p className="mt-1">{t('google.setup.step1.text')} <a href="https://console.cloud.google.com/"
-                                                                          target="_blank" rel="noreferrer"
+                                                                          target="_blank"
                                                                           className="underline">console.cloud.google.com</a>
-                    </p></div>
+                    </p>
+                </div>
                 <div>
                     <div
                         className="font-semibold text-blue-900 dark:text-blue-100">{t('google.setup.step2.title')}</div>
-                    <p className="mt-1">{t('google.setup.step2.text')}</p><p
-                    className="mt-1 text-blue-700 dark:text-blue-400">{t('google.setup.step2.fallback')}</p><code
-                    className="mt-1 block rounded bg-blue-100 dark:bg-blue-800 px-3 py-2 font-mono text-[11px] break-all">gcloud
-                    services enable sheets.googleapis.com --project=YOUR_PROJECT_ID</code></div>
+                    <p className="mt-1">{t('google.setup.step2.text')}</p>
+                    <code
+                        className="mt-1 block rounded bg-blue-100 dark:bg-blue-800 px-2 py-1 text-[10px]">gcloud services enable sheets.googleapis.com</code>
+                </div>
                 <div>
                     <div
                         className="font-semibold text-blue-900 dark:text-blue-100">{t('google.setup.step3.title')}</div>
                     <p className="mt-1">{t('google.setup.step3.text')}</p>
-                    <div className={wc2}>
-                        <strong>⚠️ {t('google.setup.step3.critical')}</strong> {t('google.setup.step3.critical.text')}
-                    </div>
+                    <p className="mt-1"><span className="font-semibold">{t('google.setup.step3.critical')}</span> {t('google.setup.step3.critical.text')}
+                    </p>
                 </div>
                 <div>
                     <div
                         className="font-semibold text-blue-900 dark:text-blue-100">{t('google.setup.step4.title')}</div>
-                    <p className="mt-1">{t('google.setup.step4.text')}</p><p
-                    className="mt-1">{t('google.setup.step4.manual')}</p><code
-                    className="mt-1 block rounded bg-blue-100 dark:bg-blue-800 px-3 py-2 font-mono text-[11px] break-all">https://www.googleapis.com/auth/spreadsheets</code>
-                    <p className="mt-2">{t('google.setup.step4.save')}</p></div>
+                    <p className="mt-1">{t('google.setup.step4.text')}</p>
+                    <p className="mt-1 text-[10px]">{t('google.setup.step4.manual')} <code
+                        className="bg-blue-100 dark:bg-blue-800 px-1">.../auth/spreadsheets</code>, <code
+                        className="bg-blue-100 dark:bg-blue-800 px-1">openid</code>, <code
+                        className="bg-blue-100 dark:bg-blue-800 px-1">email</code>, <code
+                        className="bg-blue-100 dark:bg-blue-800 px-1">profile</code></p>
+                </div>
                 <div>
                     <div
                         className="font-semibold text-blue-900 dark:text-blue-100">{t('google.setup.step5.title')}</div>
-                    <p className="mt-1">{t('google.setup.step5.text')}</p><p
-                    className="mt-1">{t('google.setup.step5.origins')}</p>
-                    <ul className="mt-1 list-disc pl-4 space-y-1">
-                        <li><code className={cc}>http://localhost:1234</code> — {t('google.setup.step5.origins.dev')}
-                        </li>
-                        <li><code
-                            className={cc}>https://YOUR-USERNAME.github.io</code> — {t('google.setup.step5.origins.prod')}
-                        </li>
+                    <p className="mt-1">{t('google.setup.step5.text')}</p>
+                    <ul className="mt-1 list-disc pl-4 text-[10px] space-y-0.5">
+                        <li><code className="bg-blue-100 dark:bg-blue-800 px-1">https://daggerok.github.io</code> {t('google.setup.step5.origins.prod')}</li>
+                        <li><code className="bg-blue-100 dark:bg-blue-800 px-1">http://localhost:1234</code> {t('google.setup.step5.origins.dev')}</li>
                     </ul>
                 </div>
                 <div>
                     <div
                         className="font-semibold text-blue-900 dark:text-blue-100">{t('google.setup.step6.title')}</div>
-                    <p className="mt-1">{t('google.setup.step6.text')}</p><p
-                    className="mt-1">{t('google.setup.step6.spreadsheet')}</p><p
-                    className="mt-1">{t('google.setup.step6.reconnect')}</p>
-                    <div className={wc2}><strong>⚠️ {t('google.setup.step6.checkbox')}</strong></div>
+                    <p className="mt-1">{t('google.setup.step6.text')}</p>
+                    <p className="mt-1">{t('google.setup.step6.spreadsheet')}</p>
+                    <p className="mt-1">{t('google.setup.step6.reconnect')} {t('google.setup.step6.checkbox')}</p>
+                </div>
+                <div
+                    className="rounded-lg border border-amber-200 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 p-2 text-amber-800 dark:text-amber-200">
+                    <span className="font-semibold">{t('google.security.title')}</span> {t('google.security.1')} {t('google.security.2')} {t('google.security.3')} {t('google.security.4')}
                 </div>
             </div>
         </details>
-        <details
-            className="rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-4">
-            <summary
-                className="cursor-pointer text-sm font-semibold text-amber-900 dark:text-amber-200">{t('google.security.title')}</summary>
-            <ul className="mt-2 text-xs text-amber-800 dark:text-amber-300 space-y-1 list-disc pl-4">
-                <li>{t('google.security.1')}</li>
-                <li>{t('google.security.2')}</li>
-                <li>{t('google.security.3')}</li>
-                <li>{t('google.security.4')}</li>
-            </ul>
-        </details>
-        <div
-            className={`rounded-xl border p-4 ${isAuthed ? 'border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/20' : 'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50'}`}>
-            <div
-                className="text-sm font-medium text-slate-700 dark:text-slate-300">{isAuthed ? `${t('google.status.connected')} ${email}` : t('google.status.notConnected')}</div>
-            <div className="mt-2 flex flex-wrap gap-2">
-                <button type="button" className={bp} disabled={isSyncing || !hc}
-                        onClick={onConnect}>{isAuthed ? t('google.btn.reconnect') : t('google.btn.connect')}</button>
-                {isAuthed && <button type="button" className={bd} disabled={isSyncing}
-                                     onClick={onDisconnect}>{t('google.btn.disconnect')}</button>}</div>
-        </div>
-        <label className="block"><span
-            className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">{t('google.clientId')}</span><input
-            type="text" value={config.google.clientId} onChange={e => onCfg({clientId: e.target.value})}
-            placeholder={t('google.clientId.placeholder')} className={ic}/><span
-            className="mt-1 block text-xs text-slate-500 dark:text-slate-400">{t('google.clientId.hint')}</span></label><label
-        className="block"><span
-        className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">{t('google.spreadsheetId')}</span><input
-        type="text" value={config.google.spreadsheetId} onChange={e => onCfg({spreadsheetId: e.target.value})}
-        placeholder={t('google.spreadsheetId.placeholder')} className={ic}/></label><label className="block"><span
-        className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">{t('google.sheetName')}</span><input
-        type="text" value={config.google.sheetName} onChange={e => onCfg({sheetName: e.target.value})}
-        placeholder={DEFAULT_SHEET} className={ic}/></label>
-        <div className="flex flex-wrap gap-2">
-            <button type="button" className={bp} disabled={isSyncing || !isAuthed || !hs}
-                    onClick={onAttach}>{t('google.btn.attachSheet')}</button>
-        </div>
-        <div><span
-            className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">{t('google.newSheetTitle')}</span>
-            <div className="flex gap-2"><input type="text" value={nt} onChange={e => setNt(e.target.value)}
-                                               placeholder={t('google.newSheetTitle.placeholder')}
-                                               className={`flex-1 ${ic}`}/>
-                <button type="button" className={bs} disabled={isSyncing || !isAuthed} onClick={() => {
-                    onCfg({spreadsheetId: `__CREATE__${nt}`});
-                    onCreate();
-                }}>{t('google.btn.createSheet')}</button>
+
+        {/* Connected status — YouTube parity card */}
+        <div className={`rounded-xl border p-4 ${connected ? 'border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/20' : 'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50'}`}>
+            <div className="flex items-center justify-between text-sm">
+                <div className="font-medium text-slate-700 dark:text-slate-300 flex items-center gap-2 flex-wrap">
+                    <span>{connected ? `${t('google.status.connected')} ${showEmail ? email : maskEmail(email)}` : t('google.status.notConnected')}</span>
+                    {connected && email && (
+                        <span className="flex items-center gap-1">
+                            <button type="button" onClick={() => setShowEmail(!showEmail)} className="text-xs px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-700 hover:bg-white dark:hover:bg-slate-700 transition-colors" title={showEmail ? "Hide email" : "Show email"}>{showEmail ? "👁️" : "👁️‍🗨️"}</button>
+                            <button type="button" onClick={() => onCopy(email, 'gEmail')} className="text-xs px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-700 hover:bg-white dark:hover:bg-slate-700 transition-colors" title="Copy email">{copiedField === 'gEmail' ? "✅" : "📋"}</button>
+                        </span>
+                    )}
+                </div>
+                <span className={`h-2 w-2 rounded-full ${connected ? 'bg-emerald-500' : 'bg-slate-400'}`} title={connected ? 'Connected' : 'Not connected'}></span>
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2">
+                {!isAuthed ? <button type="button" onClick={onConnect} disabled={isSyncing || !hc} className={bp}>{t('google.btn.connect')}</button> : <button type="button" onClick={onDisconnect} disabled={isSyncing} className={bs}>{t('google.btn.disconnect')}</button>}
+                {isAuthed && <button type="button" onClick={onConnect} disabled={isSyncing || !hc} className={bs}>{t('google.btn.reconnect')}</button>}
             </div>
         </div>
-        {isAuthed && hs && <div className="flex flex-wrap gap-2">
-            <button type="button" className={bp} disabled={isSyncing}
-                    onClick={onToGoogle}>{t('google.btn.switchToGoogle')}</button>
-            <button type="button" className={bs} disabled={isSyncing}
-                    onClick={onToLocal}>{t('google.btn.switchToLocal')}</button>
-        </div>}{nid(config.google.spreadsheetId) && !config.google.spreadsheetId.startsWith('__CREATE__') && <div
-        className="rounded-xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/20 p-4 text-sm">
-        <div className="font-medium text-emerald-800 dark:text-emerald-200 mb-1">{t('google.connectedDoc')}</div>
-        <a href={surl(nid(config.google.spreadsheetId))} target="_blank" rel="noreferrer"
-           className="text-xs text-emerald-700 dark:text-emerald-300 underline break-all">{surl(nid(config.google.spreadsheetId))}</a>
-    </div>}
+
+        <div>
+            <div className="flex items-center justify-between mb-1">
+                <label className="text-xs font-medium text-slate-600 dark:text-slate-400">{t('google.clientId')}</label>
+                <span className="flex items-center gap-1">
+                    <button type="button" onClick={() => setShowClientId(!showClientId)} className="text-xs px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800" title={showClientId ? "Hide" : "Show"}>{showClientId ? "👁️" : "👁️‍🗨️"}</button>
+                    <button type="button" onClick={() => onCopy(config.google.clientId, 'clientId')} className="text-xs px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800" title="Copy">{copiedField === 'clientId' ? "✅" : "📋"}</button>
+                </span>
+            </div>
+            <input type={showClientId ? "text" : "password"} value={config.google.clientId} onChange={e => onCfg({clientId: e.target.value})}
+                   placeholder={t('google.clientId.placeholder')}
+                   className="w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 text-xs font-mono text-slate-800 dark:text-slate-200 placeholder-slate-400 outline-none focus:border-emerald-500 transition"/>
+            <div className="text-[10px] text-slate-500 dark:text-slate-400 mt-1">{t('google.clientId.hint')}</div>
+        </div>
+        <div>
+            <div className="flex items-center justify-between mb-1">
+                <label className="text-xs font-medium text-slate-600 dark:text-slate-400">{t('google.spreadsheetId')}</label>
+                <span className="flex items-center gap-1">
+                    <button type="button" onClick={() => setShowSpreadsheetId(!showSpreadsheetId)} className="text-xs px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800" title={showSpreadsheetId ? "Hide" : "Show"}>{showSpreadsheetId ? "👁️" : "👁️‍🗨️"}</button>
+                    <button type="button" onClick={() => onCopy(config.google.spreadsheetId, 'spreadsheetId')} className="text-xs px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800" title="Copy">{copiedField === 'spreadsheetId' ? "✅" : "📋"}</button>
+                </span>
+            </div>
+            <input type={showSpreadsheetId ? "text" : "password"} value={config.google.spreadsheetId} onChange={e => onCfg({spreadsheetId: e.target.value})}
+                   placeholder={t('google.spreadsheetId.placeholder')}
+                   className="w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 text-xs font-mono text-slate-800 dark:text-slate-200 placeholder-slate-400 outline-none focus:border-emerald-500 transition"/>
+        </div>
+        <div>
+            <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('google.sheetName')}</label>
+            <input type="text" value={config.google.sheetName} onChange={e => onCfg({sheetName: e.target.value})}
+                   placeholder={DEFAULT_SHEET}
+                   className="w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 text-xs text-slate-800 dark:text-slate-200 outline-none focus:border-emerald-500 transition"/>
+            <div className="text-[10px] text-slate-500 dark:text-slate-400 mt-1">Tab name inside spreadsheet. Auto-created if missing.</div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+            <button type="button" onClick={onAttach} disabled={isSyncing || !hc || !hs} className={bp}>{t('google.btn.attachSheet')}</button>
+            <div className="flex items-center gap-2 flex-1 min-w-[200px]">
+                <input type="text" value={nt} onChange={e => setNt(e.target.value)}
+                       placeholder={t('google.newSheetTitle.placeholder')}
+                       className="flex-1 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 text-xs text-slate-800 dark:text-slate-200 outline-none focus:border-emerald-500 transition"/>
+                <button type="button" onClick={() => { const v = nt.trim() || t('google.defaultDocTitle'); onCfg({spreadsheetId: `__CREATE__${v}`}); setTimeout(() => onCreate(), 50); }} disabled={isSyncing || !hc} className={bs}>{t('google.btn.createSheet')}</button>
+            </div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+            <button type="button" disabled={isSyncing || !hs} onClick={onToGoogle} className={bp}>{t('google.btn.switchToGoogle')}</button>
+            <button type="button" disabled={isSyncing} onClick={onToLocal} className={bs}>{t('google.btn.switchToLocal')}</button>
+        </div>
+        {nid(config.google.spreadsheetId) && !config.google.spreadsheetId.startsWith('__CREATE__') && <div
+            className="rounded-xl border border-emerald-200 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-900/20 p-3">
+            <div className="font-medium text-emerald-800 dark:text-emerald-200 mb-1 text-xs">{t('google.connectedDoc')}</div>
+            <a href={surl(nid(config.google.spreadsheetId))} target="_blank" rel="noreferrer"
+               className="text-xs text-emerald-700 dark:text-emerald-300 underline break-all">{surl(nid(config.google.spreadsheetId))}</a>
+        </div>}
         <div
-            className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 p-4 text-xs text-slate-600 dark:text-slate-400">{t('google.headers.info')}
-            <code className="rounded bg-slate-200 dark:bg-slate-700 px-1 py-0.5">{SHEET_HEADERS.join(' | ')}</code>
+            className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 p-3 text-xs text-slate-600 dark:text-slate-400">
+            <div className="font-medium text-slate-700 dark:text-slate-200 mb-1">{t('google.headers.info')}</div>
+            <code className="rounded bg-slate-200 dark:bg-slate-700 px-1.5 py-0.5 font-mono text-[10px]">{SHEET_HEADERS.join(' | ')}</code>
         </div>
     </div>);
 };
@@ -824,87 +886,82 @@ const SettingsPanel: React.FC<{
     onCreate: () => void;
     onToGoogle: () => void;
     onToLocal: () => void;
-    t: (k: string) => string
-}> = (p) => {
-    const {
-        config: c,
-        setConfig: sc,
-        recordCount: rc2,
-        onClearData,
-        isSyncing,
-        isClosing,
-        onCloseEnd,
-        isAuthed,
-        email,
-        onConnect,
-        onDisconnect,
-        onAttach,
-        onCreate,
-        onToGoogle,
-        onToLocal,
-        t
-    } = p;
+    t: (k: string) => string;
+    showClientId: boolean; setShowClientId: (v: boolean) => void;
+    showSpreadsheetId: boolean; setShowSpreadsheetId: (v: boolean) => void;
+    showEmail: boolean; setShowEmail: (v: boolean) => void;
+    copiedField: string|null; onCopy: (txt: string, field: string) => void;
+}> = ({
+          config: c,
+          setConfig: sc,
+          recordCount: rc2,
+          onClearData,
+          isSyncing,
+          isClosing,
+          onCloseEnd,
+          isAuthed,
+          email,
+          onConnect,
+          onDisconnect,
+          onAttach,
+          onCreate,
+          onToGoogle,
+          onToLocal,
+          t,
+          showClientId, setShowClientId,
+          showSpreadsheetId, setShowSpreadsheetId,
+          showEmail, setShowEmail,
+          copiedField, onCopy
+      }) => {
     const gcfg = useCallback((p2: Partial<GoogleConfig>) => sc(pr => ({...pr, google: {...pr.google, ...p2}})), [sc]);
-    const to: { value: ThemePreference; label: string; icon: React.ReactNode }[] = [{
-        value: 'light',
-        label: t('settings.theme.light'),
-        icon: <IconSun className="w-4 h-4"/>
-    }, {value: 'dark', label: t('settings.theme.dark'), icon: <IconMoon className="w-4 h-4"/>}, {
-        value: 'system',
-        label: t('settings.theme.system'),
-        icon: <IconMonitor className="w-4 h-4"/>
-    }];
-    const lo: { value: Locale; label: string }[] = [{value: 'en', label: t('settings.language.en')}, {
-        value: 'ru',
-        label: t('settings.language.ru')
-    }];
-    const ba = 'bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900';
-    const bi = 'border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800';
-    const ps = [10, 25, 50, 100];
-    return (<div
-        className={`mb-6 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-lg overflow-hidden ${isClosing ? 'animate-slide-up' : 'animate-slide-down'}`}
-        onAnimationEnd={() => {
-            if (isClosing) onCloseEnd();
-        }}>
-        <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-700 px-5 py-3"><h2
-            className="text-base font-semibold text-slate-800 dark:text-slate-100">{t('settings.title')}</h2>
-            <button type="button" onClick={() => sc(p2 => ({...p2, settingsOpen: false}))}
-                    className="rounded-lg p-1.5 text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 transition">
-                <IconX/></button>
+    // mimic YouTube card style: outer card with header gradient, close button
+    return (<div onAnimationEnd={e => {
+        if (e.animationName === 'slideUp' && isClosing) onCloseEnd();
+    }}
+                 className={`settings-wrap open mb-2 ${isClosing ? 'animate-slide-up' : 'animate-slide-down'}`}>
+        <div className="settings-inner">
+        <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-lg overflow-hidden">
+        <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 bg-gradient-to-r from-slate-50 to-slate-100/50 dark:from-slate-900/30 dark:to-slate-900/10 flex items-center justify-between">
+            <h2 className="text-sm font-bold text-emerald-500">📋 {t('settings.title')}</h2>
+            <button onClick={() => sc(p=> ({...p, settingsOpen:false}))} className="text-xs px-3 py-1 rounded-lg border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800">Close</button>
         </div>
-        <div className="border-b border-slate-200 dark:border-slate-700 px-5 py-4 space-y-4"><h3
-            className="text-sm font-semibold text-slate-700 dark:text-slate-300">{t('settings.general')}</h3>
-            <div>
-                <div className="text-xs font-medium text-slate-500 dark:text-slate-400 mb-2">{t('settings.theme')}</div>
-                <div className="flex gap-2">{to.map(o => <button key={o.value} type="button"
-                                                                 onClick={() => sc(p2 => ({...p2, theme: o.value}))}
-                                                                 className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-medium transition ${c.theme === o.value ? ba : bi}`}>{o.icon}{o.label}</button>)}</div>
+        <div className="p-4 border-b border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-800/20">
+            <div className="grid grid-cols-2 gap-4">
+                <div>
+                    <div className="text-xs font-medium text-slate-600 dark:text-slate-400">{t('settings.language')}</div>
+                    <select value={c.locale} onChange={e => sc(p => ({...p, locale: e.target.value as Locale}))}
+                            className="mt-1 w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-2 py-1.5 text-xs text-slate-800 dark:text-slate-200">
+                        <option value="en">{t('settings.language.en')}</option>
+                        <option value="ru">{t('settings.language.ru')}</option>
+                    </select>
+                </div>
+                <div>
+                    <div className="text-xs font-medium text-slate-600 dark:text-slate-400">{t('settings.theme')}</div>
+                    <select value={c.theme} onChange={e => sc(p => ({...p, theme: e.target.value as ThemePreference}))}
+                            className="mt-1 w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-2 py-1.5 text-xs text-slate-800 dark:text-slate-200">
+                        <option value="light">{t('settings.theme.light')}</option>
+                        <option value="dark">{t('settings.theme.dark')}</option>
+                        <option value="system">{t('settings.theme.system')}</option>
+                    </select>
+                </div>
             </div>
-            <div>
-                <div
-                    className="text-xs font-medium text-slate-500 dark:text-slate-400 mb-2">{t('settings.language')}</div>
-                <div className="flex gap-2">{lo.map(o => <button key={o.value} type="button"
-                                                                 onClick={() => sc(p2 => ({...p2, locale: o.value}))}
-                                                                 className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-medium transition ${c.locale === o.value ? ba : bi}`}>{o.label}</button>)}</div>
+            <div className="mt-3 flex items-center justify-between rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2">
+                <div>
+                    <div
+                        className="text-sm font-medium text-slate-700 dark:text-slate-300">{t('settings.backend')}</div>
+                    <div
+                        className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">{c.preferredBackend === 'google' ? t('settings.backend.google') : t('settings.backend.local')}</div>
+                </div>
+                <span
+                    className="rounded-full bg-slate-200 dark:bg-slate-700 px-3 py-1 text-xs font-medium text-slate-700 dark:text-slate-300">{c.preferredBackend === 'google' ? 'Google' : 'Local'}</span>
             </div>
-            <div>
-                <div
-                    className="text-xs font-medium text-slate-500 dark:text-slate-400 mb-2">{t('settings.pageSize')}</div>
-                <div className="flex gap-2">{ps.map(s => <button key={s} type="button"
-                                                                 onClick={() => sc(p2 => ({...p2, pageSize: s}))}
-                                                                 className={`inline-flex items-center rounded-lg px-3 py-2 text-xs font-medium transition ${c.pageSize === s ? ba : bi}`}>{s}</button>)}</div>
-            </div>
-            <div
-                className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 p-4">
-                <div className="flex items-center justify-between">
-                    <div>
-                        <div
-                            className="text-sm font-medium text-slate-700 dark:text-slate-300">{t('settings.backend')}</div>
-                        <div
-                            className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">{c.preferredBackend === 'google' ? t('settings.backend.google') : t('settings.backend.local')}</div>
-                    </div>
-                    <span
-                        className="rounded-full bg-slate-200 dark:bg-slate-700 px-3 py-1 text-xs font-medium text-slate-700 dark:text-slate-300">{c.preferredBackend === 'google' ? 'Google' : 'Local'}</span>
+            <div className="mt-3">
+                <div className="text-xs font-medium text-slate-600 dark:text-slate-400">{t('settings.scale')}</div>
+                <div className="flex items-center gap-2 mt-1">
+                    <span className="text-[10px] text-slate-500">A</span>
+                    <input type="range" min={0} max={100} value={c.scaleSlider ?? DEFAULT_SCALE_SLIDER} onChange={e => sc(p => ({...p, scaleSlider: Number(e.target.value)}))} className="scale-slider flex-1" />
+                    <span className="text-xs font-bold text-slate-700 dark:text-slate-300">A</span>
+                    <span className="text-[10px] text-slate-500">{Math.round(sliderToScale(c.scaleSlider ?? DEFAULT_SCALE_SLIDER)*100)}%</span>
                 </div>
             </div>
         </div>
@@ -919,7 +976,13 @@ const SettingsPanel: React.FC<{
             <SettingsLocalTab config={c} recordCount={rc2} onClearData={onClearData} isSyncing={isSyncing} t={t}/> :
             <SettingsGoogleTab config={c} isAuthed={isAuthed} email={email} isSyncing={isSyncing} onCfg={gcfg}
                                onConnect={onConnect} onDisconnect={onDisconnect} onAttach={onAttach} onCreate={onCreate}
-                               onToGoogle={onToGoogle} onToLocal={onToLocal} t={t}/>}</div>
+                               onToGoogle={onToGoogle} onToLocal={onToLocal} t={t}
+                               showClientId={showClientId} setShowClientId={setShowClientId}
+                               showSpreadsheetId={showSpreadsheetId} setShowSpreadsheetId={setShowSpreadsheetId}
+                               showEmail={showEmail} setShowEmail={setShowEmail}
+                               copiedField={copiedField} onCopy={onCopy}/>}</div>
+    </div>
+        </div>
     </div>);
 };
 
@@ -943,30 +1006,104 @@ const App: React.FC = () => {
     const [gEmail, setGEmail] = useState('');
     const tokRef = useRef<string | null>(null);
     const bootDone = useRef(false);
+    const silentAttemptedRef = useRef(false);
     const inputRef = useRef<HTMLInputElement>(null);
     const t = useT(config.locale);
+    // YouTube parity: logs, debug, copy, mask, scale, sorting
+    const [logs, setLogs] = useState<LogEntry[]>([]);
+    const [showDebug, setShowDebug] = useState(false);
+    const [showClientId, setShowClientId] = useState(false);
+    const [showSpreadsheetId, setShowSpreadsheetId] = useState(false);
+    const [showEmail, setShowEmail] = useState(false);
+    const [copiedField, setCopiedField] = useState<string|null>(null);
+    const [editingId, setEditingId] = useState<string|null>(null);
+    const [editingText, setEditingText] = useState('');
     const resolved = useMemo(() => resolveTheme(config.theme), [config.theme]);
+    const dark = resolved === 'dark';
     const nsid = useMemo(() => nid(config.google.spreadsheetId), [config.google.spreadsheetId]);
     const etab = useMemo(() => config.google.sheetName.trim() || DEFAULT_SHEET, [config.google.sheetName]);
     const showToggle = useMemo(() => Boolean(config.google.clientId.trim() && nsid), [config.google.clientId, nsid]);
     const isSyncing = syncCount > 0;
+
+    const scale = useMemo(() => sliderToScale(config.scaleSlider ?? DEFAULT_SCALE_SLIDER), [config.scaleSlider]);
+    const tblFs = `${Math.round(14 * scale)}px`;
+    const tblHFs = `${Math.round(11 * scale)}px`;
+    const tblCellPy = `${Math.round(10 * scale)}px`;
+
+    // YouTube parity class helpers
+    const bg = dark ? 'bg-slate-950/95 text-slate-100' : 'bg-white/95 text-slate-900';
+    const bdr = dark ? 'border-slate-800' : 'border-slate-200';
+    const card = dark ? 'bg-slate-800 border-slate-600 text-slate-100' : 'bg-white border-slate-200 text-slate-900 shadow-sm';
+    const inp = dark ? 'bg-slate-800 border-slate-700 text-emerald-400' : 'bg-slate-50 border-slate-300 text-emerald-700';
+    const inpFilter = dark ? 'bg-slate-900 border-slate-700 text-slate-200' : 'bg-white border-slate-300 text-slate-800';
+    const mt = dark ? 'text-slate-400' : 'text-slate-500';
+    const t1 = dark ? 'text-slate-100' : 'text-slate-800';
+    const sB = dark ? 'bg-slate-800' : 'bg-white';
+    const hR = dark ? 'hover:bg-slate-700/20' : 'hover:bg-slate-50';
+    const scCls = dark ? 'dark-scroll' : 'light-scroll';
+    const tbBtn = 'w-full md:w-9 h-9 rounded-lg border-0 bg-transparent transition-all flex items-center justify-center disabled:opacity-40 text-base';
+    const iconBtn = 'w-7 h-7 rounded-md border-0 bg-transparent flex items-center justify-center text-xs transition-all active:scale-95 flex-shrink-0';
 
     const activeBackend = useMemo<BackendMode>(() => {
         if (config.preferredBackend === 'google' && isAuthed && nsid) return 'google';
         return 'local';
     }, [config.preferredBackend, isAuthed, nsid]);
 
+    const isGoogleReady = useMemo(() => isAuthed && !!tokRef.current && !!nsid, [isAuthed, nsid, syncCount]);
+
+    // logs helper (YouTube parity)
+    const log = useCallback((msg: string) => {
+        const ts = new Date().toLocaleTimeString();
+        setLogs(prev => [...prev.slice(-80), {id: uid(), msg, ts}]);
+        dbg(msg);
+    }, []);
+
     const onQuota = useCallback(() => addToast(t('local.quotaError'), 'error'), []);
     const dataStore: DataStore = useMemo(() => activeBackend === 'google' ? createGoogleDS(tokRef, nsid, etab) : createLocalDS(config.localStorageKey, onQuota), [activeBackend, config.localStorageKey, nsid, etab, onQuota]);
 
+    // Sorting & filtering (YouTube parity: per-column)
+    const sortConfig = config.sortConfig ?? { key: 'createdAt', direction: 'desc' as const };
+    const filters = config.filters ?? { text: '', createdAt: '' };
+
+    const requestSort = useCallback((key: string) => {
+        setConfig(prev => {
+            const cur = prev.sortConfig ?? { key: 'createdAt', direction: 'desc' };
+            let direction: 'asc' | 'desc' = 'asc';
+            if (cur.key === key && cur.direction === 'asc') direction = 'desc';
+            else if (cur.key === key && cur.direction === 'desc') direction = 'asc';
+            else direction = key === 'createdAt' || key === 'updatedAt' ? 'desc' : 'asc';
+            return {...prev, sortConfig: { key, direction }};
+        });
+    }, []);
+
+    const handleFilterChange = useCallback((key: string, value: string) => {
+        setConfig(prev => ({...prev, filters: {...(prev.filters ?? {}), [key]: value}}));
+    }, []);
+
     const filteredRecords = useMemo(() => {
-        let r = [...records].sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+        let r = [...records];
+        // column filters
+        const fText = (filters.text || '').toLowerCase().trim();
+        const fCreated = (filters.createdAt || '').toLowerCase().trim();
+        if (fText) r = r.filter(rec => rec.text.toLowerCase().includes(fText) || rec.id.toLowerCase().includes(fText));
+        if (fCreated) r = r.filter(rec => rec.createdAt.toLowerCase().includes(fCreated) || ft(rec.createdAt, config.locale).toLowerCase().includes(fCreated));
+        // searchQuery (unified bar search mode)
         if (searchQuery.trim()) {
             const q = searchQuery.toLowerCase();
             r = r.filter(rec => rec.text.toLowerCase().includes(q) || rec.id.toLowerCase().includes(q));
         }
+        // sort
+        const { key, direction } = sortConfig;
+        r.sort((a, b) => {
+            let av: string = (a as any)[key] ?? '';
+            let bv: string = (b as any)[key] ?? '';
+            // for text, case-insensitive
+            if (key === 'text') { av = av.toLowerCase(); bv = bv.toLowerCase(); }
+            const cmp = av.localeCompare(bv);
+            return direction === 'asc' ? cmp : -cmp;
+        });
         return r;
-    }, [records, searchQuery]);
+    }, [records, searchQuery, sortConfig, filters, config.locale]);
 
     const pageSize = config.pageSize || DEFAULT_PAGE_SIZE;
     const visibleCount = visiblePages * pageSize;
@@ -974,7 +1111,7 @@ const App: React.FC = () => {
     const hasMore = visibleCount < filteredRecords.length;
     useEffect(() => {
         setVisiblePages(1);
-    }, [searchQuery, activeBackend]);
+    }, [searchQuery, activeBackend, filters.text, filters.createdAt, sortConfig.key, sortConfig.direction]);
 
     const addToast = useCallback((msg: string, level: Toast['level'] = 'error', detail?: string) => {
         const id = uid();
@@ -992,7 +1129,12 @@ const App: React.FC = () => {
         ...t2,
         expanded: !t2.expanded
     } : t2)), []);
-    const showErr = useCallback((e: unknown, msg?: string) => addToast(msg || em(e), 'error', msg ? em(e) : undefined), [addToast]);
+    const showErr = useCallback((e: unknown, msg?: string) => {
+        const m = msg || em(e);
+        const d = msg ? em(e) : undefined;
+        addToast(m, 'error', d);
+        log(`❌ ${m}${d ? ': '+d : ''}`);
+    }, [addToast, log]);
     const bgOp = useCallback(async <T, >(op: () => Promise<T>, onOk: (r: T) => void) => {
         setSyncCount(c => c + 1);
         try {
@@ -1006,7 +1148,9 @@ const App: React.FC = () => {
 
     useEffect(() => {
         applyTheme(resolved);
-    }, [resolved]);
+        // YouTube parity: also set body bg for dark
+        document.body.style.background = dark ? '#020617' : '#f8fafc';
+    }, [resolved, dark]);
     useEffect(() => {
         if (config.theme !== 'system') return;
         const mq = window.matchMedia('(prefers-color-scheme: dark)');
@@ -1028,6 +1172,15 @@ const App: React.FC = () => {
         setSettingsClosing(false);
     }, []);
 
+    const handleCopy = useCallback(async (text: string, field: string) => {
+        const ok = await copyToClipboard(text);
+        if (ok) {
+            setCopiedField(field);
+            setTimeout(() => setCopiedField(null), 1500);
+            log(`📋 Copied ${field}`);
+        }
+    }, [log]);
+
     const doAuth = useCallback(async (inter: boolean): Promise<string> => {
         const cid = config.google.clientId.trim();
         if (!cid) throw new Error(t('google.error.noClientId'));
@@ -1039,19 +1192,35 @@ const App: React.FC = () => {
             const e = p.email?.trim() || '';
             setGEmail(e);
             setConfig(pr => ({...pr, google: {...pr.google, lastAccountEmail: e}}));
+            log(`✅ Connected as ${e || 'unknown'}`);
         } catch {
             setGEmail(config.google.lastAccountEmail);
+            log(`✅ Connected (email fetch failed, using cached)`);
         }
+        // YouTube parity: auto-ensure tab after auth (300ms)
+        setTimeout(async () => {
+            if (tokRef.current) {
+                try {
+                    await es(tokRef.current, nsid, etab);
+                    log(`✅ Tab ensured: ${etab}`);
+                    const gr = await createGoogleDS(tokRef, nsid, etab).list();
+                    setRecords(gr);
+                    log(`☁️ Loaded ${gr.length} records from ${etab}`);
+                } catch (e) { dbg('post-auth ensure failed', e); }
+            }
+        }, 300);
         return tok;
-    }, [config.google.clientId, config.google.lastAccountEmail, t]);
+    }, [config.google.clientId, config.google.lastAccountEmail, etab, nsid, t, log]);
     const dropAuth = useCallback(() => {
         if (tokRef.current && window.google?.accounts?.oauth2?.revoke) window.google.accounts.oauth2.revoke(tokRef.current, () => {
         });
         tokRef.current = null;
         setIsAuthed(false);
         setGEmail('');
-    }, []);
+        log('🔌 Disconnected from Google');
+    }, [log]);
 
+    // Boot with YouTube-grade stay-connected
     useEffect(() => {
         if (bootDone.current) return;
         bootDone.current = true;
@@ -1059,15 +1228,35 @@ const App: React.FC = () => {
             try {
                 const lr = await createLocalDS(config.localStorageKey).list();
                 setRecords(lr);
+                log(`📦 Auto-loaded ${lr.length} from localStorage`);
                 if (config.preferredBackend === 'google' && config.google.clientId.trim() && nsid) {
-                    try {
-                        await doAuth(false);
-                        const gr = await createGoogleDS(tokRef, nsid, etab).list();
-                        setRecords(gr);
-                        addToast(t('google.msg.connected'), 'info');
-                    } catch (e) {
-                        dbg('Silent fail', e);
-                        addToast(t('toast.silentAuthFailed'), 'warn', em(e));
+                    const hasPrevGoogle = !!(config.google.clientId.trim() && nsid && config.google.lastAccountEmail);
+                    // YouTube pattern: only silent if hasPrevGoogle, guard with silentAttemptedRef
+                    if (hasPrevGoogle && !isAuthed && !silentAttemptedRef.current) {
+                        silentAttemptedRef.current = true;
+                        try {
+                            await doAuth(false);
+                            const gr = await createGoogleDS(tokRef, nsid, etab).list();
+                            setRecords(gr);
+                            log(`☁️ Google Sheets session restored (${gr.length} records)`);
+                            addToast(t('google.msg.connected'), 'info');
+                        } catch (e) {
+                            dbg('Silent fail', e);
+                            log(`ℹ️ Silent restore skipped: ${em(e)} (click Connect if needed)`);
+                            addToast(t('toast.silentAuthFailed'), 'warn', em(e));
+                        }
+                    } else if (!hasPrevGoogle) {
+                        // Fallback: try silent once without email guard (original google behavior) — but don't spam
+                        try {
+                            await doAuth(false);
+                            const gr = await createGoogleDS(tokRef, nsid, etab).list();
+                            setRecords(gr);
+                            log(`☁️ Google silent connected (${gr.length})`);
+                            addToast(t('google.msg.connected'), 'info');
+                        } catch (e) {
+                            dbg('Silent fail no email', e);
+                            log(`ℹ️ Auto-login failed: ${em(e)}`);
+                        }
                     }
                 }
             } catch (e) {
@@ -1076,16 +1265,39 @@ const App: React.FC = () => {
                 setIsLoading(false);
             }
         })();
-    }, [addToast, config.google.clientId, config.localStorageKey, config.preferredBackend, doAuth, etab, nsid, showErr, t]);
+    }, []); // intentionally empty deps for boot once; config captured via initial closure; isAuthed will be updated via doAuth
 
-    const reload = useCallback(() => bgOp(() => dataStore.list(), r => setRecords(r)), [bgOp, dataStore]);
+    // Zero-click persistence: auto-ensure + load when isGoogleReady changes (YouTube parity)
+    useEffect(() => {
+        if (!isGoogleReady) return;
+        const doAuto = async () => {
+            try {
+                await es(tokRef.current!, nsid, etab);
+                const gr = await createGoogleDS(tokRef, nsid, etab).list();
+                setRecords(gr);
+                log(`☁️ Auto-loaded ${gr.length} from Google Sheets (tab: ${etab})`);
+            } catch (e) {
+                dbg('auto ensure fail', e);
+                // silent — keep local data
+            }
+        };
+        doAuto();
+    }, [isGoogleReady, etab, nsid, log]);
+
+    const reload = useCallback(() => bgOp(() => dataStore.list(), r => {
+        setRecords(r);
+        log(`↻ Reloaded ${r.length} records from ${activeBackend}`);
+    }), [bgOp, dataStore, activeBackend, log]);
     const onConnect = useCallback(() => bgOp(() => doAuth(true), () => addToast(t('google.msg.connected'), 'info')), [addToast, bgOp, doAuth, t]);
     const onDisconnect = useCallback(() => {
         dropAuth();
         setConfig(p => ({...p, preferredBackend: 'local'}));
-        createLocalDS(config.localStorageKey).list().then(r => setRecords(r));
+        createLocalDS(config.localStorageKey).list().then(r => {
+            setRecords(r);
+            log(`📦 Switched to localStorage (${r.length} records)`);
+        });
         addToast(t('google.msg.disconnected'), 'info');
-    }, [addToast, config.localStorageKey, dropAuth, t]);
+    }, [addToast, config.localStorageKey, dropAuth, t, log]);
     const onAttach = useCallback(() => bgOp(async () => {
         if (!nsid) throw new Error(t('google.error.noSpreadsheet'));
         if (!tokRef.current) await doAuth(true);
@@ -1095,203 +1307,391 @@ const App: React.FC = () => {
             preferredBackend: 'google',
             google: {...p.google, spreadsheetId: nsid, spreadsheetUrl: surl(nsid), sheetName: etab}
         }));
+        log(`✅ Attached spreadsheet tab: ${etab}`);
         return createGoogleDS(tokRef, nsid, etab).list();
     }, r => {
         setRecords(r);
         addToast(t('google.msg.sheetAttached'), 'info');
-    }), [addToast, bgOp, doAuth, etab, nsid, t]);
+        log(`📦 Loaded ${r.length} after attach`);
+    }), [addToast, bgOp, doAuth, etab, nsid, t, log]);
     const onCreateSheet = useCallback(() => bgOp(async () => {
+        let title = t('google.defaultDocTitle');
+        if (config.google.spreadsheetId.startsWith('__CREATE__')) {
+            title = config.google.spreadsheetId.replace('__CREATE__', '').trim() || title;
+        }
         if (!tokRef.current) await doAuth(true);
-        const title = config.google.spreadsheetId.startsWith('__CREATE__') ? (config.google.spreadsheetId.replace('__CREATE__', '').trim() || t('google.defaultDocTitle')) : t('google.defaultDocTitle');
         const cr = await cs(tokRef.current!, title, etab);
         setConfig(p => ({
             ...p,
             preferredBackend: 'google',
             google: {...p.google, spreadsheetId: cr.spreadsheetId, spreadsheetUrl: cr.spreadsheetUrl, sheetName: etab}
         }));
-        return [];
+        log(`✅ Created spreadsheet: ${cr.spreadsheetUrl}`);
+        return createGoogleDS(tokRef, cr.spreadsheetId, etab).list();
     }, r => {
-        setRecords(r as AppRecord[]);
+        setRecords(r);
         addToast(t('google.msg.sheetCreated'), 'info');
-    }), [addToast, bgOp, config.google.spreadsheetId, doAuth, etab, t]);
+        log(`📦 Loaded ${r.length} from new sheet`);
+    }), [addToast, bgOp, config.google.spreadsheetId, doAuth, etab, t, log]);
     const toGoogle = useCallback(() => bgOp(async () => {
         if (!nsid) throw new Error(t('google.error.noSpreadsheet'));
         if (!tokRef.current) await doAuth(true);
         await es(tokRef.current!, nsid, etab);
         setConfig(p => ({...p, preferredBackend: 'google'}));
+        log(`☁️ Switched to Google Sheets`);
         return createGoogleDS(tokRef, nsid, etab).list();
     }, r => {
         setRecords(r);
         addToast(t('google.msg.switchedToGoogle'), 'info');
-    }), [addToast, bgOp, doAuth, etab, nsid, t]);
+    }), [addToast, bgOp, doAuth, etab, nsid, t, log]);
     const toLocal = useCallback(() => {
         setConfig(p => ({...p, preferredBackend: 'local'}));
-        createLocalDS(config.localStorageKey).list().then(r => setRecords(r));
+        createLocalDS(config.localStorageKey).list().then(r => {
+            setRecords(r);
+            log(`💾 Switched to localStorage (${r.length})`);
+        });
         addToast(t('google.msg.switchedToLocal'), 'info');
-    }, [addToast, config.localStorageKey, t]);
+    }, [addToast, config.localStorageKey, t, log]);
     const headerToggle = useCallback(async () => {
         if (activeBackend === 'google') toLocal(); else await toGoogle();
     }, [activeBackend, toGoogle, toLocal]);
     const headerDisconnect = useCallback(() => onDisconnect(), [onDisconnect]);
-
     const toggleMode = useCallback(() => {
-        setInputMode(prev => {
-            if (prev === 'add') {
-                setSearchQuery(inputText);
-                return 'search';
-            } else {
-                setSearchQuery('');
-                setInputText('');
-                return 'add';
-            }
-        });
-        requestAnimationFrame(() => inputRef.current?.focus());
-    }, [inputText]);
-
+        if (inputMode === 'add') {
+            setInputMode('search');
+            setSearchQuery(inputText);
+            log('🔍 Search mode');
+        } else {
+            setInputMode('add');
+            setSearchQuery('');
+            log('✏️ Add mode');
+        }
+    }, [inputMode, inputText, log]);
     const handleInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-        const val = e.target.value;
-        setInputText(val);
-        if (inputMode === 'search') setSearchQuery(val);
+        const v = e.target.value;
+        setInputText(v);
+        if (inputMode === 'search') setSearchQuery(v);
     }, [inputMode]);
-
     const handleSubmit = useCallback((e: React.FormEvent<HTMLFormElement>) => {
         e.preventDefault();
         if (inputMode === 'add') {
-            const text = inputText.trim();
-            if (!text) return;
+            const v = inputText.trim();
+            if (!v) return;
+            bgOp(() => dataStore.add(v).then(() => dataStore.list()), r => {
+                setRecords(r);
+                log(`➕ Added: "${v.slice(0, 40)}${v.length > 40 ? '…' : ''}"`);
+            });
             setInputText('');
-            bgOp(() => dataStore.add(text).then(() => dataStore.list()), r => setRecords(r));
+        } else {
+            setSearchQuery(inputText);
         }
-    }, [bgOp, dataStore, inputMode, inputText]);
-
-    const handleDelete = useCallback((id: string) => bgOp(() => dataStore.remove(id).then(() => dataStore.list()), r => setRecords(r)), [bgOp, dataStore]);
-    const handleClear = useCallback(() => bgOp(() => dataStore.clear().then(() => dataStore.list()), r => setRecords(r)), [bgOp, dataStore]);
+    }, [bgOp, dataStore, inputMode, inputText, log]);
+    const handleDelete = useCallback((id: string) => {
+        const rec = records.find(r => r.id === id);
+        bgOp(() => dataStore.remove(id).then(() => dataStore.list()), r => {
+            setRecords(r);
+            log(`🗑️ Deleted ${rec ? `"${rec.text.slice(0, 30)}"` : id}`);
+        });
+    }, [bgOp, dataStore, records, log]);
+    const handleClear = useCallback(() => bgOp(() => dataStore.clear().then(() => dataStore.list()), r => {
+        setRecords(r);
+        log(`🧹 Cleared all (${r.length} left)`);
+    }), [bgOp, dataStore, log]);
+    const handleUpdate = useCallback((id: string, newText: string) => {
+        const v = newText.trim();
+        if (!v) return;
+        bgOp(() => dataStore.update(id, v).then(() => dataStore.list()), r => {
+            setRecords(r);
+            log(`✏️ Updated ${id.slice(0, 8)}: "${v.slice(0, 40)}"`);
+            setEditingId(null);
+            setEditingText('');
+        });
+    }, [bgOp, dataStore, log]);
     const cycleTheme = useCallback(() => setConfig(p => {
         const o: ThemePreference[] = ['light', 'dark', 'system'];
-        return {...p, theme: o[(o.indexOf(p.theme) + 1) % o.length]};
+        const i = o.indexOf(p.theme);
+        return {...p, theme: o[(i + 1) % o.length]};
     }), []);
     const toggleSettings = useCallback(() => setConfig(p => ({...p, settingsOpen: !p.settingsOpen})), []);
 
-    /**
-     * ══════════════════════════════════════════════════════════════════════
-     * KEYBOARD SHORTCUTS
-     * ══════════════════════════════════════════════════════════════════════
-     *
-     * Escape (multi-step):
-     *   1. If input has text → clear text (+ clear searchQuery if in search mode).
-     *   2. If input is empty AND in search mode → switch back to add mode.
-     *
-     * Cmd+R / Shift+Cmd+R (Mac) or F5 / Ctrl+F5 (Win/Linux):
-     *   → Reload data from active backend (preventDefault blocks browser refresh).
-     */
     useEffect(() => {
         const handler = (e: KeyboardEvent) => {
-            /* ── Escape ────────────────────────────────────────────────── */
             if (e.key === 'Escape') {
-                /* Don't interfere if user is in a settings input or other UI */
                 const active = document.activeElement;
-                const isInSettingsInput = active && active !== inputRef.current && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA');
+                const isInSettingsInput = active && active !== inputRef.current && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.tagName === 'SELECT');
                 if (isInSettingsInput) return;
-
                 if (inputText) {
-                    /* Step 1: clear text */
                     e.preventDefault();
                     setInputText('');
                     if (inputMode === 'search') setSearchQuery('');
+                    log('⎋ Cleared input');
                     return;
                 }
-
                 if (inputMode === 'search') {
-                    /* Step 2: deactivate search mode */
                     e.preventDefault();
                     setInputMode('add');
                     setSearchQuery('');
                     setInputText('');
+                    log('⎋ Exit search mode');
                     return;
                 }
                 return;
             }
-
-            /* ── Cmd+R / Shift+Cmd+R (Mac) ─────────────────────────────── */
             if (e.key === 'r' && (e.metaKey || e.ctrlKey)) {
                 e.preventDefault();
                 reload();
                 return;
             }
-
-            /* ── F5 / Ctrl+F5 (Windows/Linux) ──────────────────────────── */
             if (e.key === 'F5') {
                 e.preventDefault();
                 reload();
                 return;
             }
         };
-
         document.addEventListener('keydown', handler);
         return () => document.removeEventListener('keydown', handler);
-    }, [inputText, inputMode, reload]);
+    }, [inputText, inputMode, reload, log]);
 
     if (isLoading) return <LoadingOverlay t={t} />;
 
+    // Th component — YouTube parity with sort + filter
+    const Th: React.FC<{ label: string; columnKey: string; width?: string }> = ({ label, columnKey, width }) => (
+        <th className={`px-4 align-top ${width || ''}`} style={{ fontSize: tblHFs, paddingTop: tblCellPy, paddingBottom: tblCellPy }}>
+            <div className="flex flex-col gap-1.5">
+                <button onClick={() => requestSort(columnKey)} title={`Sort by ${label}`} className={`flex items-center gap-1 font-semibold uppercase tracking-wider text-left transition-colors hover:text-emerald-500 ${sortConfig.key === columnKey ? 'text-emerald-500' : mt}`}>
+                    {label}
+                    <span className="text-[10px]">{sortConfig.key === columnKey ? (sortConfig.direction === 'asc' ? '▲' : '▼') : '↕'}</span>
+                </button>
+                <input type="text" placeholder="Filter..." title={`Filter by ${label}`} value={(filters as any)[columnKey] || ''} onChange={e => handleFilterChange(columnKey, e.target.value)} className={`w-full px-2 py-1 text-[10px] rounded border focus:outline-none focus:border-emerald-500 transition-colors ${inpFilter}`} />
+            </div>
+        </th>
+    );
+
     return (
-        <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 transition-colors">
+        <div className={`min-h-screen transition-colors ${dark ? 'bg-slate-950 text-slate-100' : 'bg-slate-50 text-slate-900'}`}>
             <ProgressBar visible={isSyncing} />
             <ToastContainer toasts={toasts} onDismiss={dismissToast} onToggle={toggleDetail} t={t} />
-            <header className="sticky top-0 z-30 border-b border-slate-200 dark:border-slate-800 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md">
-                <div className="mx-auto max-w-6xl flex items-center justify-between px-4 py-3">
-                    <h1 className="text-lg font-bold tracking-tight">{t('header.title')}</h1>
-                    <div className="flex items-center gap-1">
-                        {showToggle && (<>
-                            {activeBackend === 'google' && <button type="button" onClick={headerDisconnect} disabled={isSyncing} className="rounded-lg p-2 text-base leading-none text-rose-500 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-900/30 transition disabled:opacity-50" title={t('header.backendToggle.disconnect')}>🔌</button>}
-                            <button type="button" onClick={headerToggle} disabled={isSyncing} className={`rounded-lg p-2 text-base leading-none transition disabled:opacity-50 ${activeBackend === 'google' ? 'bg-emerald-100 dark:bg-emerald-900/40 hover:bg-emerald-200 dark:hover:bg-emerald-800/40' : 'hover:bg-slate-100 dark:hover:bg-slate-800'}`} title={activeBackend === 'google' ? t('header.backendToggle.toLocal') : t('header.backendToggle.toGoogle')}>{activeBackend === 'google' ? '☁️' : '💾'}</button>
-                            <div className="w-px h-5 bg-slate-200 dark:bg-slate-700 mx-0.5" />
-                        </>)}
-                        <button type="button" onClick={toggleSettings} className={`rounded-lg p-2 transition ${config.settingsOpen ? 'bg-slate-200 dark:bg-slate-700' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'}`} title={t('header.settings')}><IconSettings/></button>
-                        <ThemeToggle theme={config.theme} onCycle={cycleTheme} t={t}/>
+            {/* Sticky Navbar — YouTube parity */}
+            <div className={`sticky top-0 z-30 border-b backdrop-blur-md ${bg} ${bdr}`}>
+                <div className="px-4 xl:px-8">
+                    <div className="flex flex-col md:flex-row md:items-center gap-2 py-3">
+                        {/* Input first (full width on mobile) — unified add/search bar */}
+                        <div className="w-full md:flex-1 min-w-0">
+                            <form onSubmit={handleSubmit} className="flex gap-2">
+                                <input
+                                    ref={inputRef}
+                                    type="text"
+                                    value={inputText}
+                                    onChange={handleInputChange}
+                                    placeholder={inputMode === 'add' ? t('data.placeholder.add') : t('data.placeholder.search')}
+                                    className={`w-full ${inp} border rounded-lg px-3 py-2 font-mono font-medium text-sm focus:outline-none focus:border-emerald-500 transition-colors`}
+                                />
+                                {inputMode === 'add'
+                                    ? <button type="submit" disabled={!inputText.trim()} className="hidden md:inline-flex items-center gap-1.5 rounded-lg bg-slate-900 dark:bg-slate-100 px-4 py-2 text-sm font-medium text-white dark:text-slate-900 transition hover:bg-slate-800 dark:hover:bg-slate-200 disabled:opacity-50 disabled:cursor-not-allowed"><IconPlus/>{t('data.add')}</button>
+                                    : <button type="button" disabled className="hidden md:inline-flex items-center gap-1.5 rounded-lg bg-slate-900 dark:bg-slate-100 px-4 py-2 text-sm font-medium text-white dark:text-slate-900 opacity-80 cursor-default"><IconSearch/>{t('data.find')}</button>}
+                                <button type="button" onClick={toggleMode} className={`rounded-lg border p-2.5 transition ${inputMode === 'search' ? 'border-blue-400 dark:border-blue-600 bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400' : 'border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700'}`} title={inputMode === 'search' ? t('data.mode.add') : t('data.mode.search')}><IconSearch/></button>
+                            </form>
+                        </div>
+                        {/* Actions grid — YouTube tbBtn */}
+                        <div className="grid grid-flow-col auto-cols-fr justify-items-center gap-1.5 w-full md:flex md:w-auto">
+                            <button onClick={toggleSettings} title={t('header.settings')} className={`${tbBtn} ${config.settingsOpen ? (dark ? 'bg-slate-700 text-slate-300' : 'bg-slate-200 text-slate-600') : (dark ? 'text-slate-400 hover:text-slate-200 hover:bg-slate-800' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-100')}`}>⚙️</button>
+                            <button type="button" onClick={() => setShowDebug(p=>!p)} title="Toggle debug console" className={`${tbBtn} ${dark ? 'hover:bg-slate-800' : 'hover:bg-slate-100'}`}>
+                                <span className="flex items-center justify-center gap-1">
+                                    <span className={`h-2 w-2 rounded-full ${isGoogleReady ? 'bg-blue-500' : activeBackend==='google' ? 'bg-amber-500' : 'bg-slate-400'}`} title={isGoogleReady ? `Google Sheets: ${gEmail || 'connected'}` : activeBackend==='google' ? 'Google pending auth' : 'localStorage'}></span>
+                                    <span className={`h-2 w-2 rounded-full ${records.length>0 ? 'bg-emerald-500' : 'bg-red-500'}`} title={records.length ? `${records.length} records` : 'No records'}></span>
+                                </span>
+                            </button>
+                            <button type="button" onClick={reload} className={`${tbBtn} ${dark ? 'hover:bg-slate-800 text-slate-300' : 'hover:bg-slate-100 text-slate-600'}`} title={t('data.reload')}><IconRefresh/></button>
+                            {showToggle && (<>
+                                {activeBackend === 'google' && <button type="button" onClick={headerDisconnect} disabled={isSyncing} className={`${tbBtn} text-rose-500 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-900/30 transition disabled:opacity-50`} title={t('header.backendToggle.disconnect')}>🔌</button>}
+                                <button type="button" onClick={headerToggle} disabled={isSyncing} className={`${tbBtn} transition disabled:opacity-50 ${activeBackend === 'google' ? 'bg-emerald-100 dark:bg-emerald-900/40 hover:bg-emerald-200 dark:hover:bg-emerald-800/40 text-emerald-700 dark:text-emerald-300' : (dark ? 'hover:bg-slate-800 text-slate-300' : 'hover:bg-slate-100 text-slate-600')}`} title={activeBackend === 'google' ? t('header.backendToggle.toLocal') : t('header.backendToggle.toGoogle')}>{activeBackend === 'google' ? '☁️' : '💾'}</button>
+                            </>)}
+                            <button onClick={cycleTheme} title={t('header.theme')} className={`${tbBtn} ${dark ? 'hover:bg-slate-800' : 'hover:bg-slate-100'}`}>{config.theme === 'system' ? <IconMonitor/> : dark ? <IconMoon/> : <IconSun/>}</button>
+                        </div>
+                    </div>
+                    {/* Debug Console — YouTube parity */}
+                    <div className={`console-wrap ${showDebug ? 'open' : ''}`}>
+                        <div className="console-inner">
+                            <div className="pb-2 -mt-1">
+                                <div className={`${card} border rounded-xl overflow-hidden shadow-sm`}>
+                                    <div className={`px-3 py-2 border-b ${dark ? 'border-slate-700/50 bg-slate-900/40' : 'border-slate-200 bg-slate-50'} flex items-center justify-between text-[11px]`}>
+                                        <div className="font-semibold text-emerald-500 flex items-center gap-2">
+                                            {t('console.title')}
+                                            <span className="font-normal text-[10px] text-slate-400">({logs.length})</span>
+                                        </div>
+                                        <button onClick={() => setLogs([])} className="text-[10px] px-2 py-0.5 rounded hover:bg-slate-200 dark:hover:bg-slate-700">Clear</button>
+                                    </div>
+                                    {logs.length > 0 ? (
+                                        <div className={`max-h-[180px] overflow-auto ${scCls} p-1`}>
+                                            <table className="w-full text-[11px] font-mono">
+                                                <thead>
+                                                    <tr className={dark ? 'text-slate-400' : 'text-slate-500'}>
+                                                        <th className="px-2 py-1 text-left w-10">#</th>
+                                                        <th className="px-2 py-1 text-left">Event</th>
+                                                        <th className="px-2 py-1 text-right w-20">Time</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody className={`divide-y ${dark ? 'divide-slate-700/30' : 'divide-slate-100'}`}>
+                                                    {logs.slice(-30).map((l, i) => (
+                                                        <tr key={l.id} className={`${hR} debug-row`}>
+                                                            <td className="px-2 py-1 text-slate-500">{i+1}</td>
+                                                            <td className="px-2 py-1 break-all">{l.msg}</td>
+                                                            <td className="px-2 py-1 text-right text-slate-500 whitespace-nowrap">{l.ts}</td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    ) : (
+                                        <div className="p-3 text-center text-[11px] text-slate-500">No events yet. Actions will appear here.</div>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
-            </header>
-            <main className="mx-auto max-w-6xl px-4 py-6">
-                {settingsVisible && <SettingsPanel config={config} setConfig={setConfig} recordCount={records.length} onClearData={handleClear} isSyncing={isSyncing} isClosing={settingsClosing} onCloseEnd={onCloseEnd} isAuthed={isAuthed} email={gEmail} onConnect={onConnect} onDisconnect={onDisconnect} onAttach={onAttach} onCreate={onCreateSheet} onToGoogle={toGoogle} onToLocal={toLocal} t={t}/>}
-                <div className="mb-4 flex items-center gap-2">
-                    <span className="inline-flex items-center gap-1.5 rounded-full bg-slate-200 dark:bg-slate-800 px-3 py-1 text-xs font-medium text-slate-700 dark:text-slate-300">{activeBackend === 'google' ? <IconSheet className="w-3.5 h-3.5"/> : <IconDatabase className="w-3.5 h-3.5"/>}{activeBackend === 'google' ? t('backend.badge.google') : t('backend.badge.local')}</span>
-                    <span className="text-xs text-slate-500 dark:text-slate-400">{plur(records.length, t)}{searchQuery && ` · ${filteredRecords.length} ${t('data.found')}`}</span>
+            </div>
+
+            {/* Main Workspace */}
+            <div className="px-4 xl:px-8 py-1">
+                {/* Settings Panel — YouTube card width parity */}
+                <div className={`settings-wrap ${config.settingsOpen ? 'open mb-2' : ''}`}>
+                    <div className="settings-inner">
+                        {settingsVisible && <SettingsPanel config={config} setConfig={setConfig} recordCount={records.length} onClearData={handleClear} isSyncing={isSyncing} isClosing={settingsClosing} onCloseEnd={onCloseEnd} isAuthed={isAuthed} email={gEmail} onConnect={onConnect} onDisconnect={onDisconnect} onAttach={onAttach} onCreate={onCreateSheet} onToGoogle={toGoogle} onToLocal={toLocal} t={t} showClientId={showClientId} setShowClientId={setShowClientId} showSpreadsheetId={showSpreadsheetId} setShowSpreadsheetId={setShowSpreadsheetId} showEmail={showEmail} setShowEmail={setShowEmail} copiedField={copiedField} onCopy={handleCopy}/>}
+                    </div>
                 </div>
 
-                {/* Unified input bar */}
-                <form onSubmit={handleSubmit} className="mb-5">
-                    <div key={inputMode} className="flex gap-2 animate-fade-in">
-                        <input ref={inputRef} type="text" value={inputText} onChange={handleInputChange}
-                               placeholder={inputMode === 'add' ? t('data.placeholder.add') : t('data.placeholder.search')}
-                               className="flex-1 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-4 py-2.5 text-sm text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 outline-none transition focus:border-slate-500 dark:focus:border-slate-400"/>
-                        {inputMode === 'add'
-                            ? <button type="submit" disabled={!inputText.trim()} className="inline-flex items-center gap-1.5 rounded-xl bg-slate-900 dark:bg-slate-100 px-4 py-2.5 text-sm font-medium text-white dark:text-slate-900 transition hover:bg-slate-800 dark:hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-50"><IconPlus/>{t('data.add')}</button>
-                            : <button type="button" disabled className="inline-flex items-center gap-1.5 rounded-xl bg-slate-900 dark:bg-slate-100 px-4 py-2.5 text-sm font-medium text-white dark:text-slate-900 opacity-80 cursor-default"><IconSearch/>{t('data.find')}</button>}
-                        <button type="button" onClick={reload} className="rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 p-2.5 text-slate-600 dark:text-slate-300 transition hover:bg-slate-50 dark:hover:bg-slate-700" title={t('data.reload')}><IconRefresh/></button>
-                        <button type="button" onClick={toggleMode} className={`rounded-xl border p-2.5 transition ${inputMode === 'search' ? 'border-blue-400 dark:border-blue-600 bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400' : 'border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700'}`} title={inputMode === 'search' ? t('data.mode.add') : t('data.mode.search')}><IconSearch/></button>
-                    </div>
-                </form>
+                {/* Badge row — YouTube style inventory header pre-table */}
+                <div className="mb-3 flex items-center gap-2 text-xs">
+                    <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 font-medium ${activeBackend === 'google' ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800' : 'bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-300 dark:border-slate-700'}`}>{activeBackend === 'google' ? <IconSheet className="w-3.5 h-3.5"/> : <IconDatabase className="w-3.5 h-3.5"/>}{activeBackend === 'google' ? t('backend.badge.google') : t('backend.badge.local')}</span>
+                    <span className={mt}>{plur(records.length, t)}{searchQuery ? ` · ${filteredRecords.length} ${t('data.found')}` : ''}{filters.text || filters.createdAt ? ` · filtered` : ''}</span>
+                    {isGoogleReady && <span className="text-[10px] text-emerald-500 hidden md:inline">☁️ Synced • tab: <span className="font-mono">{etab}</span></span>}
+                </div>
 
-                <div className="table-container overflow-x-auto rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-sm">
-                    <table className="min-w-full divide-y divide-slate-200 dark:divide-slate-700 text-sm">
-                        <thead><tr className="bg-slate-50 dark:bg-slate-800/50"><th className="px-4 py-3 text-left font-semibold text-slate-600 dark:text-slate-400 w-12">{t('data.col.index')}</th><th className="px-4 py-3 text-left font-semibold text-slate-600 dark:text-slate-400">{t('data.col.text')}</th><th className="px-4 py-3 text-left font-semibold text-slate-600 dark:text-slate-400 w-44">{t('data.col.created')}</th><th className="px-4 py-3 text-right font-semibold text-slate-600 dark:text-slate-400 w-24">{t('data.col.actions')}</th></tr></thead>
-                        <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                        {visibleRecords.length === 0
-                            ? <tr><td colSpan={4} className="px-4 py-16 text-center text-slate-400 dark:text-slate-500"><div className="flex flex-col items-center gap-2"><IconDatabase className="w-8 h-8 opacity-40"/><span>{searchQuery ? t('data.emptySearch') : t('data.empty')}</span></div></td></tr>
-                            : visibleRecords.map((rec, i) => (
-                                <tr key={rec.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors">
-                                    <td className="px-4 py-3 align-top text-slate-400 dark:text-slate-500 tabular-nums">{i + 1}</td>
-                                    <td className="px-4 py-3 align-top"><div className="text-slate-800 dark:text-slate-200 break-words whitespace-pre-wrap">{rec.text}</div><div className="mt-1 text-[11px] text-slate-400 dark:text-slate-500 font-mono">{rec.id}</div></td>
-                                    <td className="px-4 py-3 align-top text-slate-500 dark:text-slate-400 whitespace-nowrap">{ft(rec.createdAt, config.locale)}</td>
-                                    <td className="px-4 py-3 align-top text-right"><button type="button" onClick={() => handleDelete(rec.id)} className="inline-flex items-center gap-1 rounded-lg border border-rose-200 dark:border-rose-800 px-2.5 py-1.5 text-xs font-medium text-rose-600 dark:text-rose-400 transition hover:bg-rose-50 dark:hover:bg-rose-900/20"><IconTrash/>{t('data.delete')}</button></td>
+                {/* Table Card — YouTube parity */}
+                <div className={`${card} border rounded-xl overflow-hidden shadow-lg`}>
+                    <div className={`px-4 py-3 bg-gradient-to-r ${dark ? 'from-slate-900/30 to-slate-900/10' : 'from-slate-50 to-slate-100/50'} flex items-center justify-between gap-4`}>
+                        <div>
+                            <h3 className="font-bold text-emerald-500" style={{ fontSize: `${Math.round(16 * scale)}px` }}>
+                                📋 Messages ({filteredRecords.length} / {records.length})
+                            </h3>
+                            {isGoogleReady && (
+                                <div className="text-[10px] mt-0.5 text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
+                                    ☁️ Synced to Google Sheets • tab: <span className="font-mono">{etab}</span> {isSyncing && '• syncing...'}
+                                </div>
+                            )}
+                        </div>
+                        <div className="flex items-center gap-2 flex-shrink-0">
+                            <span className={`text-[10px] ${mt}`}>A</span>
+                            <input type="range" min={0} max={100} value={config.scaleSlider ?? DEFAULT_SCALE_SLIDER} onChange={e => setConfig(p => ({...p, scaleSlider: Number(e.target.value)}))} className="scale-slider w-20" title={`Scale: ${Math.round(scale*100)}%`} />
+                            <span className={`text-xs font-bold ${mt}`}>A</span>
+                        </div>
+                    </div>
+
+                    {/* Desktop Table */}
+                    <div className={`hidden md:block overflow-x-auto ${scCls}`}>
+                        <table className="w-full text-left border-collapse" style={{ fontSize: tblFs }}>
+                            <thead>
+                                <tr className={dark ? 'text-slate-400' : 'text-slate-500'}>
+                                    <th className="px-4 py-3 text-left font-semibold w-12" style={{ fontSize: tblHFs, paddingTop: tblCellPy, paddingBottom: tblCellPy }}>{t('data.col.index')}</th>
+                                    <Th label={t('data.col.text')} columnKey="text" />
+                                    <Th label={t('data.col.created')} columnKey="createdAt" width="w-44" />
+                                    <th className="px-4 py-3 text-right font-semibold w-40" style={{ fontSize: tblHFs, paddingTop: tblCellPy, paddingBottom: tblCellPy }}>{t('data.col.actions')}</th>
                                 </tr>
-                            ))}
-                        </tbody>
-                    </table>
+                            </thead>
+                            <tbody className={`divide-y ${dark ? 'divide-slate-700/30' : 'divide-slate-100'}`}>
+                                {visibleRecords.length === 0
+                                    ? <tr><td colSpan={4} className={`px-4 py-16 text-center ${mt}`}><div className="flex flex-col items-center gap-2"><IconDatabase className="w-8 h-8 opacity-40"/><span>{searchQuery || filters.text || filters.createdAt ? t('data.emptySearch') : t('data.empty')}</span></div></td></tr>
+                                    : visibleRecords.map((rec, i) => (
+                                    <tr key={rec.id} className={`${hR} transition-colors group`}>
+                                        <td className={`px-4 font-mono ${mt} sticky left-0 z-10 ${sB} whitespace-nowrap`} style={{ paddingTop: tblCellPy, paddingBottom: tblCellPy }}>{i+1}</td>
+                                        <td className="px-4 align-top" style={{ paddingTop: tblCellPy, paddingBottom: tblCellPy }}>
+                                            {editingId === rec.id ? (
+                                                <div className="flex gap-2">
+                                                    <input value={editingText} onChange={e => setEditingText(e.target.value)} onKeyDown={e => { if (e.key==='Enter') handleUpdate(rec.id, editingText); if (e.key==='Escape') { setEditingId(null); setEditingText(''); } }} autoFocus className={`flex-1 rounded border px-2 py-1 text-sm ${inp} focus:outline-none focus:border-emerald-500`} placeholder="Edit text..." />
+                                                    <button onClick={() => handleUpdate(rec.id, editingText)} disabled={!editingText.trim()} className="px-2 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-xs disabled:opacity-50 flex items-center gap-1"><IconCheck/> {t('data.save')}</button>
+                                                    <button onClick={() => { setEditingId(null); setEditingText(''); }} className={`px-2 py-1 rounded border text-xs ${bs || 'border-slate-300 dark:border-slate-600'}`}>{t('data.cancel')}</button>
+                                                </div>
+                                            ) : (
+                                                <>
+                                                    <div className={`break-words whitespace-pre-wrap ${t1}`}>{rec.text}</div>
+                                                    <div className="mt-1 text-[11px] font-mono text-slate-400 dark:text-slate-500 break-all">{rec.id}</div>
+                                                </>
+                                            )}
+                                        </td>
+                                        <td className={`px-4 align-top whitespace-nowrap ${mt}`} style={{ paddingTop: tblCellPy, paddingBottom: tblCellPy }}>
+                                            <div>{ft(rec.createdAt, config.locale)}</div>
+                                            {rec.updatedAt !== rec.createdAt && <div className="text-[10px] opacity-60">upd: {ft(rec.updatedAt, config.locale)}</div>}
+                                        </td>
+                                        <td className="px-4 align-top text-right" style={{ paddingTop: tblCellPy, paddingBottom: tblCellPy }}>
+                                            <div className="flex items-center justify-end gap-1">
+                                                {editingId === rec.id ? null : <button type="button" onClick={() => { setEditingId(rec.id); setEditingText(rec.text); }} className={`has-tip ${iconBtn} ${dark ? 'text-emerald-400 hover:bg-emerald-500/20' : 'text-emerald-600 hover:bg-emerald-100'}`} data-tip={t('data.edit')}><IconEdit/></button>}
+                                                <button type="button" onClick={() => handleDelete(rec.id)} className={`has-tip ${iconBtn} ${dark ? 'text-rose-400 hover:bg-rose-500/20' : 'text-rose-600 hover:bg-rose-100'}`} data-tip={t('data.delete')}><IconTrash/></button>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+
+                    {/* Mobile cards */}
+                    <div className="block md:hidden p-3 space-y-2">
+                        <div className="pb-1 flex gap-2">
+                            <input type="text" placeholder="Filter Text..." title="Filter by Text" value={filters.text || ''} onChange={e => handleFilterChange('text', e.target.value)} className={`flex-1 min-w-0 px-3 py-2 text-xs rounded border ${inpFilter}`} />
+                            <input type="text" placeholder="Filter Date..." title="Filter by Date" value={filters.createdAt || ''} onChange={e => handleFilterChange('createdAt', e.target.value)} className={`w-28 px-3 py-2 text-xs rounded border ${inpFilter}`} />
+                        </div>
+                        {visibleRecords.length === 0 ? (
+                            <div className={`text-center py-12 ${mt}`}>{searchQuery || filters.text || filters.createdAt ? t('data.emptySearch') : t('data.empty')}</div>
+                        ) : visibleRecords.map((rec, i) => (
+                            <div key={rec.id} className={`border rounded-xl px-3 py-2.5 ${dark ? 'bg-slate-900/40 border-slate-700/60' : 'bg-slate-50 border-slate-200'} space-y-1.5`}>
+                                <div className="flex items-start justify-between gap-2">
+                                    <div className="min-w-0 flex-1">
+                                        {editingId === rec.id ? (
+                                            <div className="space-y-2">
+                                                <textarea value={editingText} onChange={e => setEditingText(e.target.value)} rows={3} className={`w-full rounded border px-2 py-1 text-sm ${inp} focus:outline-none focus:border-emerald-500`} />
+                                                <div className="flex gap-2">
+                                                    <button onClick={() => handleUpdate(rec.id, editingText)} disabled={!editingText.trim()} className="flex-1 py-1.5 rounded bg-emerald-600 text-white text-xs disabled:opacity-50">Save</button>
+                                                    <button onClick={() => { setEditingId(null); setEditingText(''); }} className="flex-1 py-1.5 rounded border text-xs">Cancel</button>
+                                                </div>
+                                            </div>
+                                        ) : (
+                                            <>
+                                                <div className={`font-medium text-sm leading-snug whitespace-pre-wrap break-words ${t1}`}>{rec.text}</div>
+                                                <div className="text-[10px] font-mono text-slate-400 truncate">{rec.id}</div>
+                                            </>
+                                        )}
+                                    </div>
+                                    <div className="flex items-center gap-0.5 flex-shrink-0">
+                                        {editingId !== rec.id && (
+                                            <>
+                                                <button onClick={() => { setEditingId(rec.id); setEditingText(rec.text); }} className={`has-tip ${iconBtn} ${dark ? 'text-emerald-400 hover:bg-emerald-500/20' : 'text-emerald-600 hover:bg-emerald-100'}`} data-tip="Edit"><IconEdit/></button>
+                                                <button onClick={() => handleDelete(rec.id)} className={`has-tip ${iconBtn} ${dark ? 'text-rose-400 hover:bg-rose-500/20' : 'text-rose-600 hover:bg-rose-100'}`} data-tip="Delete"><IconTrash/></button>
+                                            </>
+                                        )}
+                                    </div>
+                                </div>
+                                <div className={`text-[11px] font-mono ${mt} flex items-center justify-between`}>
+                                    <span>{ft(rec.createdAt, config.locale)}</span>
+                                    <span className="opacity-60">#{i+1}</span>
+                                </div>
+                                {rec.updatedAt !== rec.createdAt && <div className="text-[10px] text-slate-500">updated: {ft(rec.updatedAt, config.locale)}</div>}
+                            </div>
+                        ))}
+                    </div>
                 </div>
-                {hasMore && <div className="mt-4 flex justify-center"><button type="button" onClick={() => setVisiblePages(p => p + 1)} className="inline-flex items-center gap-2 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-6 py-2.5 text-sm font-medium text-slate-700 dark:text-slate-300 transition hover:bg-slate-50 dark:hover:bg-slate-700">{t('data.loadMore')} ({filteredRecords.length - visibleCount})</button></div>}
-                {DEBUG && <details className="mt-6 rounded-2xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-4"><summary className="cursor-pointer text-sm font-medium text-amber-800 dark:text-amber-200">{t('debug.title')}</summary><pre className="mt-3 text-xs text-amber-700 dark:text-amber-300 overflow-x-auto">{JSON.stringify({ config, recordCount: records.length, activeBackend, resolved, isAuthed, gEmail, syncCount, inputMode, searchQuery, visiblePages, pageSize }, null, 2)}</pre></details>}
-            </main>
+
+                {/* Mobile Add bar for small screens (YouTube parity: input already in navbar, but keep load more etc) */}
+                <div className="md:hidden mt-3">
+                    <form onSubmit={handleSubmit} className="flex gap-2">
+                        <button type="submit" disabled={!inputText.trim() || inputMode !== 'add'} className={`flex-1 rounded-lg px-4 py-2.5 text-sm font-medium transition ${inputMode === 'add' ? 'bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 hover:bg-slate-800 dark:hover:bg-slate-200 disabled:opacity-50' : 'bg-slate-200 dark:bg-slate-800 text-slate-500'}`}>{inputMode === 'add' ? t('data.add') : t('data.find')}</button>
+                    </form>
+                </div>
+
+                {hasMore && <div className="mt-4 flex justify-center"><button type="button" onClick={() => setVisiblePages(p => p + 1)} className={`inline-flex items-center gap-2 rounded-xl border px-6 py-2.5 text-sm font-medium transition ${dark ? 'border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700' : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'}`}>{t('data.loadMore')} ({filteredRecords.length - visibleCount})</button></div>}
+                {DEBUG && <details className="mt-6 rounded-2xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-4"><summary className="cursor-pointer text-sm font-medium text-amber-800 dark:text-amber-200">{t('debug.title')}</summary><pre className="mt-3 text-xs text-amber-700 dark:text-amber-300 overflow-x-auto">{JSON.stringify({ config, recordCount: records.length, activeBackend, resolved, dark, isAuthed, gEmail, syncCount, isGoogleReady, inputMode, searchQuery, visiblePages, pageSize, sortConfig, filters, etab, nsid }, null, 2)}</pre></details>}
+                <div className="mt-8 text-center text-[10px] text-slate-400">Google Sheets Store — YouTube parity • {activeBackend} • {records.length} records</div>
+            </div>
         </div>
     );
 };

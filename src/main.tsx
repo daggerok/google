@@ -1610,7 +1610,7 @@ const App: React.FC = () => {
                                                 <div className="flex gap-2">
                                                     <input value={editingText} onChange={e => setEditingText(e.target.value)} onKeyDown={e => { if (e.key==='Enter') handleUpdate(rec.id, editingText); if (e.key==='Escape') { setEditingId(null); setEditingText(''); } }} autoFocus className={`flex-1 rounded border px-2 py-1 text-sm ${inp} focus:outline-none focus:border-emerald-500`} placeholder="Edit text..." />
                                                     <button onClick={() => handleUpdate(rec.id, editingText)} disabled={!editingText.trim()} className="px-2 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-xs disabled:opacity-50 flex items-center gap-1"><IconCheck/> {t('data.save')}</button>
-                                                    <button onClick={() => { setEditingId(null); setEditingText(''); }} className={`px-2 py-1 rounded border text-xs ${bs || 'border-slate-300 dark:border-slate-600'}`}>{t('data.cancel')}</button>
+                                                    <button onClick={() => { setEditingId(null); setEditingText(''); }} className="px-2 py-1 rounded border border-slate-300 dark:border-slate-600 text-xs">{t('data.cancel')}</button>
                                                 </div>
                                             ) : (
                                                 <>

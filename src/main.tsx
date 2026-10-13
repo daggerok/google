@@ -1692,7 +1692,6 @@ const App: React.FC = () => {
 
                 {hasMore && <div className="mt-4 flex justify-center"><button type="button" onClick={() => setVisiblePages(p => p + 1)} className={`inline-flex items-center gap-2 rounded-xl border px-6 py-2.5 text-sm font-medium transition ${dark ? 'border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700' : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'}`}>{t('data.loadMore')} ({filteredRecords.length - visibleCount})</button></div>}
                 {DEBUG && <details className="mt-6 rounded-2xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-4"><summary className="cursor-pointer text-sm font-medium text-amber-800 dark:text-amber-200">{t('debug.title')}</summary><pre className="mt-3 text-xs text-amber-700 dark:text-amber-300 overflow-x-auto">{JSON.stringify({ config, recordCount: records.length, activeBackend, resolved, dark, isAuthed, gEmail, syncCount, isGoogleReady, inputMode, searchQuery, visiblePages, pageSize, sortConfig, filters, etab, nsid }, null, 2)}</pre></details>}
-                <div className="mt-8 text-center text-[10px] text-slate-400">Google Sheets Store — YouTube parity • {activeBackend} • {records.length} records</div>
             </div>
             <footer className="flex h-4 xl:h-8 items-center justify-center px-4 xl:px-8 text-[10px] leading-none text-slate-400">
                 <a href={REPO_URL} target="_blank" rel="noopener noreferrer" className="transition-colors hover:text-slate-600 dark:hover:text-slate-200">

@@ -990,6 +990,8 @@ const SettingsPanel: React.FC<{
 // APP
 // ============================================================================
 
+const REPO_URL = 'https://github.com/daggerok/google';
+
 const App: React.FC = () => {
     const [config, setConfig] = useState<AppConfig>(() => rc());
     const [records, setRecords] = useState<AppRecord[]>([]);
@@ -1468,7 +1470,7 @@ const App: React.FC = () => {
     );
 
     return (
-        <div className={`min-h-screen transition-colors ${dark ? 'bg-slate-950 text-slate-100' : 'bg-slate-50 text-slate-900'}`}>
+        <div className={`flex min-h-screen flex-col transition-colors ${dark ? 'bg-slate-950 text-slate-100' : 'bg-slate-50 text-slate-900'}`}>
             <ProgressBar visible={isSyncing} />
             <ToastContainer toasts={toasts} onDismiss={dismissToast} onToggle={toggleDetail} t={t} />
             {/* Sticky Navbar — YouTube parity */}
@@ -1553,7 +1555,7 @@ const App: React.FC = () => {
             </div>
 
             {/* Main Workspace */}
-            <div className="px-4 xl:px-8 py-1">
+            <div className="flex-1 px-4 xl:px-8 py-1">
                 {/* Settings Panel — YouTube card width parity */}
                 <div className={`settings-wrap ${config.settingsOpen ? 'open mb-2' : ''}`}>
                     <div className="settings-inner">
@@ -1692,6 +1694,11 @@ const App: React.FC = () => {
                 {DEBUG && <details className="mt-6 rounded-2xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-4"><summary className="cursor-pointer text-sm font-medium text-amber-800 dark:text-amber-200">{t('debug.title')}</summary><pre className="mt-3 text-xs text-amber-700 dark:text-amber-300 overflow-x-auto">{JSON.stringify({ config, recordCount: records.length, activeBackend, resolved, dark, isAuthed, gEmail, syncCount, isGoogleReady, inputMode, searchQuery, visiblePages, pageSize, sortConfig, filters, etab, nsid }, null, 2)}</pre></details>}
                 <div className="mt-8 text-center text-[10px] text-slate-400">Google Sheets Store — YouTube parity • {activeBackend} • {records.length} records</div>
             </div>
+            <footer className="px-4 pt-1 pb-3 text-center text-[10px] leading-tight text-slate-400">
+                <a href={REPO_URL} target="_blank" rel="noopener noreferrer" className="transition-colors hover:text-slate-600 dark:hover:text-slate-200">
+                    daggerok &copy; {new Date().getFullYear()}
+                </a>
+            </footer>
         </div>
     );
 };

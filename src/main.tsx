@@ -414,15 +414,18 @@ const cs = async (tok: string, title: string, tab: string) => {
     await es(tok, id, t);
     return {spreadsheetId: id, spreadsheetUrl: r.spreadsheetUrl?.trim() || surl(id)};
 };
+// A row without an id gets one derived from its sheet row number (row 2 = first data row),
+// so the same row keeps the same id between a list and the update or delete that follows.
+const fallbackRowId = (sheetRow: number) => `row-${sheetRow}`;
+const rowId = (row: string[] | undefined, sheetRow: number) => (row?.[0] ?? '').trim() || fallbackRowId(sheetRow);
 const rsr = async (tok: string, sid: string, tab: string): Promise<AppRecord[]> => {
     const id = nid(sid);
     const t = tab.trim() || DEFAULT_SHEET;
     const r = await sa<{ values?: string[][] }>(`/spreadsheets/${id}/values/${encodeURIComponent(sr(t, 'A2:D'))}`, tok);
     return (r.values ?? []).map((row, i) => {
-        const rid = (row[0] ?? '').trim() || `r-${i}-${uid()}`;
         const text = row[1] ?? '';
-        if (!rid && !text.trim()) return null;
-        return {id: rid, text, createdAt: row[2] ?? '', updatedAt: row[3] ?? row[2] ?? ''} as AppRecord;
+        if (!(row[0] ?? '').trim() && !text.trim()) return null;
+        return {id: rowId(row, i + 2), text, createdAt: row[2] ?? '', updatedAt: row[3] ?? row[2] ?? ''} as AppRecord;
     }).filter(Boolean) as AppRecord[];
 };
 const asr = async (tok: string, sid: string, tab: string, rec: AppRecord) => {
@@ -433,22 +436,47 @@ const asr = async (tok: string, sid: string, tab: string, rec: AppRecord) => {
         body: JSON.stringify({values: [[rec.id, rec.text, rec.createdAt, rec.updatedAt]]})
     });
 };
-const wsr = async (tok: string, sid: string, tab: string, recs: AppRecord[]) => {
+// Row-level writes: update rewrites one row, remove deletes one row, nothing else is touched.
+// The row is located right before the write by re-reading A2:D, never by a cached index.
+const findSheetRow = async (tok: string, id: string, t: string, rid: string) => {
+    const r = await sa<{ values?: string[][] }>(`/spreadsheets/${id}/values/${encodeURIComponent(sr(t, 'A2:D'))}`, tok);
+    const rows = r.values ?? [];
+    const i = rows.findIndex((row, k) => rowId(row, k + 2) === rid);
+    return i === -1 ? null : {sheetRow: i + 2, row: rows[i]};
+};
+const usr = async (tok: string, sid: string, tab: string, rid: string, text: string) => {
+    const id = nid(sid);
+    const t = tab.trim() || DEFAULT_SHEET;
+    const found = await findSheetRow(tok, id, t, rid);
+    if (!found) throw new Error('Not found');
+    // Column A stays as is: a row without an id keeps its row-based fallback id.
+    const rr = sr(t, `B${found.sheetRow}:D${found.sheetRow}`);
+    await sa(`/spreadsheets/${id}/values/${encodeURIComponent(rr)}?valueInputOption=RAW`, tok, {
+        method: 'PUT',
+        body: JSON.stringify({range: rr, majorDimension: 'ROWS', values: [[text, found.row[2] ?? '', now()]]})
+    });
+};
+const dsr = async (tok: string, sid: string, tab: string, rid: string) => {
+    const id = nid(sid);
+    const t = tab.trim() || DEFAULT_SHEET;
+    const m = await sa<{ sheets?: { properties?: { sheetId?: number; title?: string } }[] }>(`/spreadsheets/${id}?fields=sheets.properties(sheetId,title)`, tok);
+    const tabMeta = (m.sheets ?? []).find(s => s.properties?.title === t);
+    if (!tabMeta) throw new Error(`No tab ${t}`);
+    // The first tab usually has sheetId 0; treat an omitted id as that default.
+    const sheetId = tabMeta.properties?.sheetId ?? 0;
+    const found = await findSheetRow(tok, id, t, rid);
+    if (!found) return;
+    await sa(`/spreadsheets/${id}:batchUpdate`, tok, {
+        method: 'POST',
+        body: JSON.stringify({requests: [{deleteDimension: {range: {sheetId, dimension: 'ROWS', startIndex: found.sheetRow - 1, endIndex: found.sheetRow}}}]})
+    });
+};
+const csr = async (tok: string, sid: string, tab: string) => {
     const id = nid(sid);
     const t = tab.trim() || DEFAULT_SHEET;
     await sa(`/spreadsheets/${id}/values/${encodeURIComponent(sr(t, 'A2:D'))}:clear`, tok, {
         method: 'POST',
         body: '{}'
-    });
-    if (!recs.length) return;
-    const pr = sr(t, 'A2:D');
-    await sa(`/spreadsheets/${id}/values/${encodeURIComponent(pr)}?valueInputOption=RAW`, tok, {
-        method: 'PUT',
-        body: JSON.stringify({
-            range: pr,
-            majorDimension: 'ROWS',
-            values: recs.map(r => [r.id, r.text, r.createdAt, r.updatedAt])
-        })
     });
 };
 const createGoogleDS = (tRef: React.MutableRefObject<string | null>, sid: string, tab: string): DataStore => {
@@ -464,16 +492,9 @@ const createGoogleDS = (tRef: React.MutableRefObject<string | null>, sid: string
             const r: AppRecord = {id: uid(), text, createdAt: now(), updatedAt: now()};
             await asr(gt(), id, t, r);
             return r;
-        }, update: async (rid, text) => {
-            const all = await rsr(gt(), id, t);
-            const idx = all.findIndex(r => r.id === rid);
-            if (idx === -1) throw new Error('Not found');
-            all[idx] = {...all[idx], text, updatedAt: now()};
-            await wsr(gt(), id, t, all);
-        }, remove: async (rid) => {
-            const all = await rsr(gt(), id, t);
-            await wsr(gt(), id, t, all.filter(r => r.id !== rid));
-        }, clear: async () => wsr(gt(), id, t, [])
+        }, update: async (rid, text) => usr(gt(), id, t, rid, text),
+        remove: async (rid) => dsr(gt(), id, t, rid),
+        clear: async () => csr(gt(), id, t)
     };
 };
 

@@ -100,6 +100,14 @@ The project builds successfully, the Pages build works, TypeScript compile passe
 ## F-01 — Google Sheets delete / clear model is not concurrency-safe
 **Severity:** High
 
+**Status (2026-10-24):** partially fixed - recommendations 1 and 2 are done, 3 to 5 stay open
+
+- update re-reads `A2:D`, finds the row by record id right before writing and PUTs only `B{row}:D{row}`
+- delete finds the row the same way and removes it with `batchUpdate` `deleteDimension` (sheetId from spreadsheet metadata)
+- clear still clears `A2:D` (that is the intended result); there is no full-sheet rewrite left
+- a row without an id gets the stable fallback id `row-<sheet row>` instead of a random one per read, so it can be edited and deleted too
+- still open: no conflict or version check (a row moved by another client between the lookup and the write can be hit), no automated tests for these flows
+
 ### Evidence
 
 - list reads the whole sheet into memory: `src/main.tsx:390-400`

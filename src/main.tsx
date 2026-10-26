@@ -32,6 +32,7 @@
  *    - doAuth(false) prompt:'' silent restore on boot if hasPrevGoogle
  *    - doAuth(true) prompt:'consent' interactive connect
  *    - gTokRef memory-only token, revoke on disconnect
+ *    - 401 after the ~1 h token expiry: withTokenRetry renews once (silent prompt:'' via refreshToken, concurrent 401s share one request) and retries the operation once; a second 401 surfaces as before
  *    - isGoogleReady = isAuthed && token && nid(spreadsheetId)
  *    - zero-click auto-ensure: es() + reload when isGoogleReady changes (mirrors YouTube ensureVideoTab + readVideosFromSheet)
  *    - Auto-ensure after successful auth (setTimeout 300ms) + immediate load, matching YouTube's post-auth tab ensure.
@@ -379,9 +380,41 @@ const gf = async <T, >(url: string, tok: string, init: RequestInit = {}): Promis
             const e = (json as any).error;
             if (e?.message) msg = e.message;
         }
-        throw new Error(`API ${res.status}: ${msg}`);
+        // status lets withTokenRetry tell an expired token (401) from other failures.
+        const err: Error & { status?: number } = new Error(`API ${res.status}: ${msg}`);
+        err.status = res.status;
+        throw err;
     }
     return json as T;
+};
+// A GIS access token lives about an hour and a browser app gets no refresh token, so an
+// expired token shows up as a 401. The operation then runs once more with a token from a
+// silent (prompt: '') request. A second 401 or a failed refresh surfaces the original
+// error, so this never loops. Tokens are never logged or stored outside tRef (memory).
+const isUnauthorized = (e: unknown) => (e as { status?: unknown } | null)?.status === 401;
+// Callers run inside async functions, so the synchronous 'Session expired' becomes a rejection there.
+const withTokenRetry = <T, >(tRef: { current: string | null }, refresh: () => Promise<string>, op: (tok: string) => Promise<T>): Promise<T> => {
+    const used = tRef.current;
+    if (!used) throw new Error('Session expired');
+    return op(used).catch((e: unknown) => {
+        if (!isUnauthorized(e)) throw e;
+        // Another operation may have refreshed the token already; reuse it instead of asking again.
+        const current = tRef.current;
+        if (current && current !== used) return op(current);
+        // Exactly one refresh and one retry; the retry's own error (a second 401 too) is final.
+        // A failed refresh (thrown or rejected) surfaces the original 401.
+        const failed = (re: unknown): never => {
+            dbg('token refresh failed', em(re));
+            throw e;
+        };
+        let renewed: Promise<string>;
+        try {
+            renewed = refresh();
+        } catch (re) {
+            return failed(re);
+        }
+        return renewed.then(op, failed);
+    });
 };
 const sa = <T, >(p: string, tok: string, i?: RequestInit) => gf<T>(`${SHEETS_API}${p}`, tok, i);
 const fp = async (tok: string) => gf<{ email?: string }>(USERINFO, tok);
@@ -411,7 +444,7 @@ const cs = async (tok: string, title: string, tab: string) => {
     });
     const id = r.spreadsheetId?.trim();
     if (!id) throw new Error('No ID');
-    await es(tok, id, t);
+    // The caller runs es (tab + headers) as its own step, see onCreateSheet.
     return {spreadsheetId: id, spreadsheetUrl: r.spreadsheetUrl?.trim() || surl(id)};
 };
 // A row without an id gets one derived from its sheet row number (row 2 = first data row),
@@ -479,22 +512,20 @@ const csr = async (tok: string, sid: string, tab: string) => {
         body: '{}'
     });
 };
-const createGoogleDS = (tRef: React.MutableRefObject<string | null>, sid: string, tab: string): DataStore => {
-    const gt = () => {
-        const t = tRef.current;
-        if (!t) throw new Error('Session expired');
-        return t;
-    };
+// Every operation goes through withTokenRetry: on a 401 it is retried once with a refreshed
+// token. A retried operation re-reads what it needs (row lookup, tab metadata) with the new token.
+const createGoogleDS = (tRef: React.MutableRefObject<string | null>, sid: string, tab: string, refresh: () => Promise<string>): DataStore => {
+    const run = <T, >(op: (tok: string) => Promise<T>) => withTokenRetry(tRef, refresh, op);
     const id = nid(sid);
     const t = tab.trim() || DEFAULT_SHEET;
     return {
-        list: async () => rsr(gt(), id, t), add: async (text) => {
+        list: async () => run(tok => rsr(tok, id, t)), add: async (text) => {
             const r: AppRecord = {id: uid(), text, createdAt: now(), updatedAt: now()};
-            await asr(gt(), id, t, r);
+            await run(tok => asr(tok, id, t, r));
             return r;
-        }, update: async (rid, text) => usr(gt(), id, t, rid, text),
-        remove: async (rid) => dsr(gt(), id, t, rid),
-        clear: async () => csr(gt(), id, t)
+        }, update: async (rid, text) => run(tok => usr(tok, id, t, rid, text)),
+        remove: async (rid) => run(tok => dsr(tok, id, t, rid)),
+        clear: async () => run(tok => csr(tok, id, t))
     };
 };
 
@@ -1081,8 +1112,39 @@ const App: React.FC = () => {
         dbg(msg);
     }, []);
 
+    // Silent token renewal after a 401 (see withTokenRetry). Concurrent 401s share one GIS
+    // request. Only tokRef (memory) receives the token; it is never logged or persisted.
+    // Stable callback (refs, no deps), so effects that list it do not re-run on a locale or config edit.
+    const refreshInFlight = useRef<Promise<string> | null>(null);
+    const clientIdRef = useRef(config.google.clientId);
+    clientIdRef.current = config.google.clientId;
+    const tTextRef = useRef(t);
+    tTextRef.current = t;
+    const refreshToken = useCallback((): Promise<string> => {
+        const inFlight = refreshInFlight.current;
+        if (inFlight) return inFlight;
+        const cid = clientIdRef.current.trim();
+        if (!cid) throw new Error(tTextRef.current('google.error.noClientId'));
+        log('🔐 Google token expired; renewing and retrying once…');
+        const p = rt(cid, false).then(tok => {
+            refreshInFlight.current = null;
+            // Disconnected while the renewal was running: do not bring the session back.
+            if (!tokRef.current) throw new Error('Session expired');
+            tokRef.current = tok;
+            log('✅ Google token renewed');
+            return tok;
+        }, (e: unknown) => {
+            refreshInFlight.current = null;
+            log(`❌ Google token renewal failed: ${em(e)}`);
+            throw e;
+        });
+        refreshInFlight.current = p;
+        return p;
+    }, [log]);
+    const withAuth = useCallback(<T, >(op: (tok: string) => Promise<T>) => withTokenRetry(tokRef, refreshToken, op), [refreshToken]);
+
     const onQuota = useCallback(() => addToast(t('local.quotaError'), 'error'), []);
-    const dataStore: DataStore = useMemo(() => activeBackend === 'google' ? createGoogleDS(tokRef, nsid, etab) : createLocalDS(config.localStorageKey, onQuota), [activeBackend, config.localStorageKey, nsid, etab, onQuota]);
+    const dataStore: DataStore = useMemo(() => activeBackend === 'google' ? createGoogleDS(tokRef, nsid, etab, refreshToken) : createLocalDS(config.localStorageKey, onQuota), [activeBackend, config.localStorageKey, nsid, etab, onQuota, refreshToken]);
 
     // Sorting & filtering (YouTube parity: per-column)
     const sortConfig = config.sortConfig ?? { key: 'createdAt', direction: 'desc' as const };
@@ -1224,16 +1286,16 @@ const App: React.FC = () => {
         setTimeout(async () => {
             if (tokRef.current) {
                 try {
-                    await es(tokRef.current, nsid, etab);
+                    await withAuth(tok => es(tok, nsid, etab));
                     log(`✅ Tab ensured: ${etab}`);
-                    const gr = await createGoogleDS(tokRef, nsid, etab).list();
+                    const gr = await createGoogleDS(tokRef, nsid, etab, refreshToken).list();
                     setRecords(gr);
                     log(`☁️ Loaded ${gr.length} records from ${etab}`);
                 } catch (e) { dbg('post-auth ensure failed', e); }
             }
         }, 300);
         return tok;
-    }, [config.google.clientId, config.google.lastAccountEmail, etab, nsid, t, log]);
+    }, [config.google.clientId, config.google.lastAccountEmail, etab, nsid, t, log, withAuth, refreshToken]);
     const dropAuth = useCallback(() => {
         if (tokRef.current && window.google?.accounts?.oauth2?.revoke) window.google.accounts.oauth2.revoke(tokRef.current, () => {
         });
@@ -1259,7 +1321,7 @@ const App: React.FC = () => {
                         silentAttemptedRef.current = true;
                         try {
                             await doAuth(false);
-                            const gr = await createGoogleDS(tokRef, nsid, etab).list();
+                            const gr = await createGoogleDS(tokRef, nsid, etab, refreshToken).list();
                             setRecords(gr);
                             log(`☁️ Google Sheets session restored (${gr.length} records)`);
                             addToast(t('google.msg.connected'), 'info');
@@ -1272,7 +1334,7 @@ const App: React.FC = () => {
                         // Fallback: try silent once without email guard (original google behavior) — but don't spam
                         try {
                             await doAuth(false);
-                            const gr = await createGoogleDS(tokRef, nsid, etab).list();
+                            const gr = await createGoogleDS(tokRef, nsid, etab, refreshToken).list();
                             setRecords(gr);
                             log(`☁️ Google silent connected (${gr.length})`);
                             addToast(t('google.msg.connected'), 'info');
@@ -1295,8 +1357,8 @@ const App: React.FC = () => {
         if (!isGoogleReady) return;
         const doAuto = async () => {
             try {
-                await es(tokRef.current!, nsid, etab);
-                const gr = await createGoogleDS(tokRef, nsid, etab).list();
+                await withAuth(tok => es(tok, nsid, etab));
+                const gr = await createGoogleDS(tokRef, nsid, etab, refreshToken).list();
                 setRecords(gr);
                 log(`☁️ Auto-loaded ${gr.length} from Google Sheets (tab: ${etab})`);
             } catch (e) {
@@ -1305,7 +1367,7 @@ const App: React.FC = () => {
             }
         };
         doAuto();
-    }, [isGoogleReady, etab, nsid, log]);
+    }, [isGoogleReady, etab, nsid, log, withAuth, refreshToken]);
 
     const reload = useCallback(() => bgOp(() => dataStore.list(), r => {
         setRecords(r);
@@ -1324,49 +1386,51 @@ const App: React.FC = () => {
     const onAttach = useCallback(() => bgOp(async () => {
         if (!nsid) throw new Error(t('google.error.noSpreadsheet'));
         if (!tokRef.current) await doAuth(true);
-        await es(tokRef.current!, nsid, etab);
+        await withAuth(tok => es(tok, nsid, etab));
         setConfig(p => ({
             ...p,
             preferredBackend: 'google',
             google: {...p.google, spreadsheetId: nsid, spreadsheetUrl: surl(nsid), sheetName: etab}
         }));
         log(`✅ Attached spreadsheet tab: ${etab}`);
-        return createGoogleDS(tokRef, nsid, etab).list();
+        return createGoogleDS(tokRef, nsid, etab, refreshToken).list();
     }, r => {
         setRecords(r);
         addToast(t('google.msg.sheetAttached'), 'info');
         log(`📦 Loaded ${r.length} after attach`);
-    }), [addToast, bgOp, doAuth, etab, nsid, t, log]);
+    }), [addToast, bgOp, doAuth, etab, nsid, t, log, withAuth, refreshToken]);
     const onCreateSheet = useCallback(() => bgOp(async () => {
         let title = t('google.defaultDocTitle');
         if (config.google.spreadsheetId.startsWith('__CREATE__')) {
             title = config.google.spreadsheetId.replace('__CREATE__', '').trim() || title;
         }
         if (!tokRef.current) await doAuth(true);
-        const cr = await cs(tokRef.current!, title, etab);
+        // Create and ensure are retried separately: a retry must never create a second spreadsheet.
+        const cr = await withAuth(tok => cs(tok, title, etab));
+        await withAuth(tok => es(tok, cr.spreadsheetId, etab));
         setConfig(p => ({
             ...p,
             preferredBackend: 'google',
             google: {...p.google, spreadsheetId: cr.spreadsheetId, spreadsheetUrl: cr.spreadsheetUrl, sheetName: etab}
         }));
         log(`✅ Created spreadsheet: ${cr.spreadsheetUrl}`);
-        return createGoogleDS(tokRef, cr.spreadsheetId, etab).list();
+        return createGoogleDS(tokRef, cr.spreadsheetId, etab, refreshToken).list();
     }, r => {
         setRecords(r);
         addToast(t('google.msg.sheetCreated'), 'info');
         log(`📦 Loaded ${r.length} from new sheet`);
-    }), [addToast, bgOp, config.google.spreadsheetId, doAuth, etab, t, log]);
+    }), [addToast, bgOp, config.google.spreadsheetId, doAuth, etab, t, log, withAuth, refreshToken]);
     const toGoogle = useCallback(() => bgOp(async () => {
         if (!nsid) throw new Error(t('google.error.noSpreadsheet'));
         if (!tokRef.current) await doAuth(true);
-        await es(tokRef.current!, nsid, etab);
+        await withAuth(tok => es(tok, nsid, etab));
         setConfig(p => ({...p, preferredBackend: 'google'}));
         log(`☁️ Switched to Google Sheets`);
-        return createGoogleDS(tokRef, nsid, etab).list();
+        return createGoogleDS(tokRef, nsid, etab, refreshToken).list();
     }, r => {
         setRecords(r);
         addToast(t('google.msg.switchedToGoogle'), 'info');
-    }), [addToast, bgOp, doAuth, etab, nsid, t, log]);
+    }), [addToast, bgOp, doAuth, etab, nsid, t, log, withAuth, refreshToken]);
     const toLocal = useCallback(() => {
         setConfig(p => ({...p, preferredBackend: 'local'}));
         createLocalDS(config.localStorageKey).list().then(r => {
